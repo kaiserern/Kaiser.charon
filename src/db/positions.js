@@ -24,6 +24,23 @@ export function canOpenMorePositions() {
   return openPositionCount() < max;
 }
 
+// Read-only pre-swap guard: run BEFORE spending SOL so a dedup hit or position-cap
+// breach never leaves orphaned tokens in the wallet. Mirrors createLivePosition's
+// in-transaction dedup (which stays as the backstop). Returns {allowed, reason}.
+export function checkEntryGuards(mint) {
+  if (!canOpenMorePositions()) {
+    const max = activeStrategy().max_open_positions ?? numSetting('max_open_positions', 3);
+    return { allowed: false, reason: `max_open_positions (${openPositionCount()}/${max})` };
+  }
+  const existing = db.prepare(`SELECT id FROM dry_run_positions WHERE mint = ? AND status = 'open' LIMIT 1`).get(mint);
+  if (existing) return { allowed: false, reason: 'open position exists', blockedById: existing.id };
+  const recentClosed = db.prepare(`SELECT id FROM dry_run_positions WHERE mint = ? AND status = 'closed' AND closed_at_ms > ? LIMIT 1`).get(mint, now() - 86400000);
+  if (recentClosed) return { allowed: false, reason: 'closed <24h', blockedById: recentClosed.id };
+  const pastWin = db.prepare(`SELECT id FROM dry_run_positions WHERE mint = ? AND status = 'closed' AND pnl_percent > 0 LIMIT 1`).get(mint);
+  if (pastWin) return { allowed: false, reason: 'past win exists', blockedById: pastWin.id };
+  return { allowed: true };
+}
+
 export function tradingMode() {
   const mode = setting('trading_mode', 'dry_run');
   return ['dry_run', 'confirm', 'live'].includes(mode) ? mode : 'dry_run';

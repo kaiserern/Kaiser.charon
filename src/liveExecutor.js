@@ -45,7 +45,11 @@ export async function fetchLiveTokenBalance(mint) {
       { mint: new PublicKey(mint) },
       'confirmed',
     );
-    return accounts.value[0]?.account?.data?.parsed?.info?.tokenAmount?.amount || null;
+    // Distinguish "RPC ok, zero/no account" from "RPC failed". A successful query with no
+    // token account or a zero amount is a real "0"; only return null on actual failure so
+    // callers (partial-TP reconcile, retry reconcile) can tell wallet-truth from unverifiable.
+    const amt = accounts.value[0]?.account?.data?.parsed?.info?.tokenAmount?.amount;
+    return amt != null ? String(amt) : '0';
   } catch (err) {
     console.log(`[live] token balance ${mint.slice(0, 8)}... ${err.message}`);
     return null;
@@ -69,6 +73,7 @@ async function jupiterOrder({ inputMint, outputMint, amount }) {
   url.searchParams.set('outputMint', outputMint);
   url.searchParams.set('amount', String(amount));
   url.searchParams.set('taker', liveWallet.publicKey.toBase58());
+  url.searchParams.set('slippageBps', String(JUPITER_SLIPPAGE_BPS));
   const res = await axios.get(url.toString(), {
     timeout: 20_000,
     headers: { ...JSON_HEADERS, 'x-api-key': JUPITER_API_KEY },
