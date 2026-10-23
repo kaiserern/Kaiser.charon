@@ -41,7 +41,7 @@ A working fork of [yunus-0x/charon](https://github.com/yunus-0x/charon). All cre
 ```bash
 git clone https://github.com/kaiserern/Kaiser.charon.git
 cd Kaiser.charon
-npm install                 # native build needed for better-sqlite3 / canvas — see Requirements
+npm install                 # native build — see Requirements
 cp .env.example .env        # fill in tokens + RPC below
 npm run check               # syntax check before first boot
 npm test                    # 29 offline tests
