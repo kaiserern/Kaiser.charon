@@ -1,5 +1,5 @@
 import { now, firstPositiveNumber, marketCapFromGmgn, tokenPriceFromGmgn, lamToSol } from '../utils.js';
-import { activeStrategy } from '../db/settings.js';
+import { activeStrategy, numSetting } from '../db/settings.js';
 import { JUPITER_ASSET_FRESH_TTL_MS } from '../config.js';
 import { fetchGmgnTokenInfo } from '../enrichment/gmgn.js';
 import { fetchJupiterAsset, fetchJupiterHolders, fetchJupiterChartContext } from '../enrichment/jupiter.js';
@@ -260,8 +260,9 @@ export function filterCandidate(candidate) {
   // (WR 31%), so exempting them cut total to +2.94. Read from candidate.metrics.liquidityUsd
   // (same field the backtest measured). See BACKTEST_EDGE_2026-07-07.md.
   const liquidity = Number(candidate.metrics?.liquidityUsd || candidate.gmgn?.pool?.liquidity || candidate.gmgn?.liquidity || 0);
-  if (liquidity > 0 && liquidity < 6000) {
-    failures.push(`DEX liquidity too low: $${liquidity.toFixed(0)} < $6000`);
+  const minLiquidityUsd = numSetting('min_liquidity_usd', 6000);
+  if (liquidity > 0 && liquidity < minLiquidityUsd) {
+    failures.push(`DEX liquidity too low: $${liquidity.toFixed(0)} < $${minLiquidityUsd}`);
   }
 
   // === FLOW FILTER (2026-07-17): momentum + net buying pressure ===

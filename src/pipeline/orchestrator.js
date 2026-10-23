@@ -1,7 +1,7 @@
 import { updateCandidateSnapshot } from '../db/candidates.js';
 import { paperAudit } from '../db/paperAudit.js';
 import { now, pruneSeen } from '../utils.js';
-import { numSetting, boolSetting } from '../db/settings.js';
+import { numSetting, boolSetting, setting } from '../db/settings.js';
 import { db } from '../db/connection.js';
 import { upsertCandidate, updateCandidateStatus, recentEligibleCandidates, candidateById } from '../db/candidates.js';
 import { storeDecision, storeBatchDecision, logDecisionEvent, checkDecisionCache } from '../db/decisions.js';
@@ -38,7 +38,19 @@ const EXPECTED_ENTRY_REJECTIONS = new Set([
 setDegenHandler(maybeProcessDegenCandidate);
 setCandidateHandler(processCandidateFromSignals);
 
+// Route allowlist — settings.allowed_routes (comma-separated). Empty = every route allowed.
+export function routeAllowed(route) {
+  const allowed = String(setting('allowed_routes', ''))
+    .split(',').map(s => s.trim()).filter(Boolean);
+  return allowed.length === 0 || allowed.includes(String(route || ''));
+}
+
 export async function processCandidateFromSignals(signals) {
+  if (!routeAllowed(signals.route)) {
+    console.log(`[agent] route "${signals.route}" not in allowed_routes — skipping ${signals.mint.slice(0, 8)}...`);
+    return;
+  }
+
   // Skip if max positions reached — don't waste enrichment/LLM calls
   if (!canOpenMorePositions()) {
     const max = numSetting('max_open_positions', 3);
