@@ -54,11 +54,36 @@ def extract_features(candidate):
         gmgn = {}
     price = gmgn.get("price") or {}
     if not isinstance(price, dict):
-        price = {}
+        price = {"price": safe_float(price)}
     trenches = candidate.get("trenchesEntry") or {}
     if not isinstance(trenches, dict):
         trenches = {}
     
+    # Preserve GMGN features when present. Jupiter provides 5m/1h aggregates,
+    # not 1m history: derive only the equivalent observed windows.
+    asset = candidate.get("jupiterAsset") or {}
+    if not isinstance(asset, dict):
+        asset = {}
+    current = safe_float(price.get("price"))
+    if not np.isfinite(current) or current <= 0:
+        current = safe_float(asset.get("usdPrice"))
+        if not np.isfinite(current) or current <= 0:
+            current = safe_float(metrics.get("priceUsd"))
+    if (not np.isfinite(safe_float(price.get("price"))) or safe_float(price.get("price")) <= 0) and current > 0:
+        price = dict(price)
+        price["price"] = current
+        for interval in ("5m", "1h"):
+            stats = asset.get("stats" + interval) or {}
+            if not isinstance(stats, dict):
+                continue
+            change = safe_float(stats.get("priceChange"), float("nan"))
+            if np.isfinite(change) and change > -100:
+                price["price_" + interval] = current / (1 + change / 100)
+            buy = safe_float(stats.get("buyVolume"))
+            sell = safe_float(stats.get("sellVolume"))
+            price["volume_" + interval] = buy + sell
+            price["swaps_" + interval] = safe_float(stats.get("numBuys")) + safe_float(stats.get("numSells"))
+
     f = {}
     f["price_current"] = safe_float(price.get("price"))
     f["price_1m"] = safe_float(price.get("price_1m"))

@@ -2,10 +2,10 @@
  * Momentum filter — calls Python ML model to predict if a candidate
  * will be a runner (TRAILING_TP) or sideways (MAX_HOLD).
  * 
- * SAFETY: If the model fails or times out, returns PASS so Charon
- * never gets stuck waiting for ML.
+ * SAFETY: If the model fails or times out, rejects the candidate; missing evidence is not a successful check.
  */
 
+import { momentumResult } from '../execution/paperSafety.js';
 import { spawn } from 'child_process';
 import { fileURLToPath } from 'url';
 import path from 'path';
@@ -23,11 +23,16 @@ export async function momentumFilter(candidate, threshold = DEFAULT_THRESHOLD) {
   const startTime = Date.now();
   const mint = candidate.token?.mint?.slice(0, 8) || 'unknown';
   
-  // Check if we have price data
-  const price = candidate.gmgn?.price || {};
-  if (!price.price && !price.price_1h) {
-    console.log(`[momentum] ${mint}... no price data — pass`);
-    return { passed: true, score: 1.0, reason: 'no_price_data' };
+  if (!Number.isFinite(threshold) || threshold < 0 || threshold > 1) {
+    return { passed: false, score: -1, reason: 'invalid_threshold' };
+  }
+  // Spot evidence can come from either enrichment schema. Historical windows
+  // are handled in Python; never manufacture history by repeating spot values.
+  const gmgnPrice = candidate.gmgn?.price;
+  const prices = [typeof gmgnPrice === 'object' ? gmgnPrice?.price : gmgnPrice, candidate.jupiterAsset?.usdPrice, candidate.metrics?.priceUsd];
+  if (!prices.some(value => Number.isFinite(Number(value)) && Number(value) > 0)) {
+    console.log(`[momentum] ${mint}... no price data — blocked`);
+    return { passed: false, score: -1, reason: 'no_price_data' };
   }
   
   return new Promise((resolve) => {
@@ -49,8 +54,8 @@ export async function momentumFilter(candidate, threshold = DEFAULT_THRESHOLD) {
     
     const timeout = setTimeout(() => {
       stderr && console.error(`[momentum] ${mint}... stderr: ${stderr.trim()}`);
-      console.error(`[momentum] ${mint}... timeout after ${TIMEOUT_MS}ms — pass`);
-      finish({ passed: true, score: -1, reason: 'timeout' });
+      console.error(`[momentum] ${mint}... timeout after ${TIMEOUT_MS}ms — blocked`);
+      finish({ passed: false, score: -1, reason: 'timeout' });
     }, TIMEOUT_MS);
     
     proc.stdout.on('data', (data) => {
@@ -63,26 +68,27 @@ export async function momentumFilter(candidate, threshold = DEFAULT_THRESHOLD) {
     
     proc.on('error', (err) => {
       clearTimeout(timeout);
-      console.error(`[momentum] ${mint}... spawn error: ${err.message} — pass`);
-      finish({ passed: true, score: -1, reason: err.message });
+      console.error(`[momentum] ${mint}... spawn error: ${err.message} — blocked`);
+      finish({ passed: false, score: -1, reason: err.message });
     });
     
     proc.on('close', (code) => {
       clearTimeout(timeout);
       
       if (code !== 0) {
-        console.error(`[momentum] ${mint}... exit code ${code} — pass`);
-        finish({ passed: true, score: -1, reason: `exit_${code}` });
+        console.error(`[momentum] ${mint}... exit code ${code} — blocked`);
+        finish({ passed: false, score: -1, reason: `exit_${code}` });
         return;
       }
       
       try {
         const result = JSON.parse(stdout.trim());
-        const score = result.momentum_score;
+        const validated = momentumResult(result, threshold);
+        const score = validated.score;
         
         if (score < 0) {
-          console.error(`[momentum] ${mint}... model error: ${result.error} — pass`);
-          finish({ passed: true, score: -1, reason: result.error });
+          console.error(`[momentum] ${mint}... model error: ${result.error} — blocked`);
+          finish({ passed: false, score: -1, reason: result.error });
           return;
         }
         
@@ -97,23 +103,24 @@ export async function momentumFilter(candidate, threshold = DEFAULT_THRESHOLD) {
         
         finish({ passed, score, latency });
       } catch (e) {
-        console.error(`[momentum] ${mint}... JSON parse error: ${e.message} — pass`);
-        finish({ passed: true, score: -1, reason: 'parse_error' });
+        console.error(`[momentum] ${mint}... JSON parse error: ${e.message} — blocked`);
+        finish({ passed: false, score: -1, reason: 'parse_error' });
       }
     });
     
     // Send candidate JSON to Python
     const input = JSON.stringify({ candidate });
+    proc.stdin.on('error', () => { clearTimeout(timeout); finish({ passed: false, score: -1, reason: 'stdin_error' }); });
     proc.stdin.write(input);
     proc.stdin.end();
   });
 }
 
 /**
- * Synchronous fallback — always passes.
+ * Synchronous fallback — cannot validate ML evidence.
  */
 export function momentumScoreSync(candidate) {
-  return { passed: true, score: 1.0, reason: 'sync_fallback' };
+  return { passed: false, score: -1, reason: 'sync_fallback' };
 }
 
 /**

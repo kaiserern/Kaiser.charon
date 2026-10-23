@@ -75,11 +75,12 @@ export async function sendPositionOpen(positionId) {
   const label = position.execution_mode === 'live' ? 'Live buy executed' : 'Dry-run buy stored';
   const text = `✅ <b>${label}</b>\n\n${formatPosition(position)}`;
   let photoSent = false;
+  let sent;
   try {
     const buffer = await generateEntryCard(position);
     const tmpPath = `/tmp/charon_entry_${positionId}.png`;
     writeFileSync(tmpPath, buffer);
-    await bot.sendPhoto(TELEGRAM_CHAT_ID, tmpPath, {
+    sent = await bot.sendPhoto(TELEGRAM_CHAT_ID, tmpPath, {
       caption: text,
       parse_mode: 'HTML',
       disable_web_page_preview: true,
@@ -91,9 +92,15 @@ export async function sendPositionOpen(positionId) {
   } catch (err) {
     if (!photoSent) {
       console.log('[send] entry card failed:', err.message);
-      await sendTelegram(text, positionButtons(positionId));
+      sent = await sendTelegram(text, positionButtons(positionId));
     }
   }
+  if (sent?.message_id) {
+    db.prepare(`INSERT INTO alerts (candidate_id,mint,kind,sent_at_ms,telegram_message_id,payload_json) VALUES (?,?,?,?,?,?)`)
+      .run(position.candidate_id ?? null, position.mint, 'position_open', now(), sent.message_id, json({ positionId }));
+    console.log(`[send] position ${positionId} Telegram acknowledged message ${sent.message_id}`);
+  }
+  return sent;
 }
 
 export async function sendPositionExit(position) {

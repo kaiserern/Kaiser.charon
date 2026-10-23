@@ -7,6 +7,7 @@ import { monitorPositions } from './execution/positions.js';
 import { processCandidateFromSignals, maybeProcessDegenCandidate } from './pipeline/orchestrator.js';
 import { sendTelegram } from './telegram/send.js';
 import { makeFailureTracker } from './utils.js';
+import { singleFlight } from './utils/singleFlight.js';
 
 setDefaultResultOrder('ipv4first');
 validateConfig();
@@ -27,16 +28,18 @@ export async function startCharon() {
     const trackServer = makeFailureTracker('server signals', alert);
     const trackDip = makeFailureTracker('dip monitor', alert);
 
-    await fetchServerSignals().catch(error => console.log(`[server] initial fetch failed: ${error.message}`));
-    setInterval(() => trackServer(() => fetchServerSignals()), SIGNAL_POLL_MS);
+    const serverCycle = singleFlight(fetchServerSignals);
+    serverCycle().catch(error => console.log(`[server] initial fetch failed: ${error.message}`));
+    setInterval(() => trackServer(serverCycle), SIGNAL_POLL_MS);
 
     // GMGN Trenches polling (runs alongside server signals)
     const { fetchTrenches, setCandidateHandler: setTrenchesHandler } = await import('./signals/trenches.js');
     setTrenchesHandler(processCandidateFromSignals);
     const trackTrenches = makeFailureTracker('gmgn trenches', alert);
-    await fetchTrenches().catch(error => console.log(`[trenches] initial fetch failed: ${error.message}`));
+    const trenchesCycle = singleFlight(fetchTrenches);
+    trenchesCycle().catch(error => console.log(`[trenches] initial fetch failed: ${error.message}`));
     // Reduced from 30s to 60s — pump.fun direct source is faster and more reliable
-    setInterval(() => trackTrenches(() => fetchTrenches()), 60_000);
+    setInterval(() => trackTrenches(trenchesCycle), 60_000);
 
     // Price monitor for dip buy strategy
     const { monitorPriceAlerts, cleanupAlerts } = await import('./signals/priceMonitor.js');
@@ -52,9 +55,10 @@ export async function startCharon() {
 
     setCandidateHandler(processCandidateFromSignals);
 
-    await fetchTrenches().catch(error => console.log(`[trenches] initial fetch failed: ${error.message}`));
+    const trenchesCycle = singleFlight(fetchTrenches);
+    trenchesCycle().catch(error => console.log(`[trenches] initial fetch failed: ${error.message}`));
     // Reduced from 30s to 60s — pump.fun direct source is faster and more reliable
-    setInterval(() => fetchTrenches().catch(error => console.log(`[trenches] ${error.message}`)), 60_000);
+    setInterval(() => trenchesCycle().catch(error => console.log(`[trenches] ${error.message}`)), 60_000);
 
     console.log(`[bot] ${APP_NAME} started (trenches-only mode)`);
   }
@@ -62,16 +66,18 @@ export async function startCharon() {
   // Graduation polling — runs in both modes (GMGN /v1/token/info based detection)
   const { startGraduationPolling, fetchGraduatedCoins } = await import('./signals/graduated.js');
   const trackGraduation = makeFailureTracker('graduation poll', (msg) => sendTelegram(msg));
-  fetchGraduatedCoins().catch(err => console.log(`[graduated] initial fetch failed: ${err.message}`));
-  setInterval(() => trackGraduation(() => fetchGraduatedCoins()), 60_000);
+  const graduatedFetchCycle = singleFlight(fetchGraduatedCoins);
+  graduatedFetchCycle().catch(err => console.log(`[graduated] initial fetch failed: ${err.message}`));
+  setInterval(() => trackGraduation(graduatedFetchCycle), 60_000);
   startGraduationPolling();
 
   // Trending polling — runs in both modes
   const { fetchGmgnTrending, setTrendingCandidateHandler } = await import('./signals/trending.js');
   setTrendingCandidateHandler(processCandidateFromSignals);
   const trackTrending = makeFailureTracker('trending poll', (msg) => sendTelegram(msg));
-  fetchGmgnTrending().catch(err => console.log(`[trending] initial fetch failed: ${err.message}`));
-  setInterval(() => trackTrending(() => fetchGmgnTrending()), TRENDING_POLL_MS);
+  const trendingCycle = singleFlight(fetchGmgnTrending);
+  trendingCycle().catch(err => console.log(`[trending] initial fetch failed: ${err.message}`));
+  setInterval(() => trackTrending(trendingCycle), TRENDING_POLL_MS);
 
   if (PREGRAD_ENABLED) {
     const { startPumpfunPregrad, setCandidateHandler: setPregradHandler } = await import('./signals/pumpfunPregrad.js');

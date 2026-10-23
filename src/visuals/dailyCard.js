@@ -1,665 +1,483 @@
 import { createCanvas, registerFont } from 'canvas';
+import fs from 'fs';
 
-// 900x1120: Modern 4:5 mobile portrait aspect ratio for Telegram
-const W = 900;
-const H = 1120;
+// Try register Inter & JetBrains Mono if available
+const interPath = '/home/ubuntu/.local/share/fonts/Inter-Variable.ttf';
+const jbMonoPath = '/home/ubuntu/.local/share/fonts/JetBrainsMono-Variable.ttf';
 
-// High-contrast refined dark fintech palette
-const COLOR_BG_TOP = '#0B0E14';
-const COLOR_BG_BOTTOM = '#06080C';
+if (fs.existsSync(interPath)) {
+  registerFont(interPath, { family: 'Inter' });
+}
+if (fs.existsSync(jbMonoPath)) {
+  registerFont(jbMonoPath, { family: 'JetBrainsMono' });
+}
 
-// PNL Colors (Vibrant Neon Glow accents)
-const PROFIT = '#00F090';       // Electric Emerald
-const PROFIT_DIM = '#00F09033';
-const PROFIT_BG = 'rgba(0, 240, 144, 0.08)';
+// Canvas Dimensions - Ultra Crisp HiDPI 1000 x 1360 (Modern Bento aspect ratio)
+const W = 1000;
+const H = 1360;
 
-const LOSS = '#FF3B56';         // Vivid Crimson
-const LOSS_DIM = '#FF3B5633';
-const LOSS_BG = 'rgba(255, 59, 86, 0.08)';
+// Luxury Obsidian / Deep Space Theme Palette
+const PALETTE = {
+  cardBg: 'rgba(17, 24, 39, 0.72)',
+  cardBgElevated: 'rgba(23, 33, 51, 0.85)',
+  cardBorder: 'rgba(255, 255, 255, 0.08)',
+  cardBorderLight: 'rgba(255, 255, 255, 0.14)',
+  
+  // Neon Accents
+  profitGreen: '#00F29D',
+  profitGreenMuted: 'rgba(0, 242, 157, 0.14)',
+  profitGlow: 'rgba(0, 242, 157, 0.35)',
+  profitBorder: 'rgba(0, 242, 157, 0.45)',
 
-const NEUTRAL = '#94A3B8';
-const BRAND_PURPLE = '#8B5CF6'; // Charon Accent Violet
-const BRAND_CYAN = '#06B6D4';   // Solana / Cyber cyan
+  lossRed: '#FF3B69',
+  lossRedMuted: 'rgba(255, 59, 105, 0.14)',
+  lossGlow: 'rgba(255, 59, 105, 0.35)',
+  lossBorder: 'rgba(255, 59, 105, 0.45)',
 
-const TEXT_PRIMARY = '#F8FAFC';
-const TEXT_SECONDARY = '#94A3B8';
-const TEXT_MUTED = '#64748B';
+  brandSolana: '#9945FF',
+  brandSolanaCyan: '#14F195',
+  brandCyan: '#38BDF8',
+  brandPurple: '#A78BFA',
 
-const CARD_BG = '#121722';
-const CARD_BG_ELEVATED = '#161D2B';
-const CARD_BORDER = 'rgba(255, 255, 255, 0.08)';
-const CARD_BORDER_GLOW = 'rgba(139, 92, 246, 0.2)';
+  // Typography
+  textPrimary: '#FFFFFF',
+  textSecondary: '#94A3B8',
+  textMuted: '#64748B',
+  textGhost: '#475569',
+};
 
-function roundedRect(ctx, x, y, w, h, r) {
+function roundRect(ctx, x, y, w, h, r) {
   const radius = Math.min(r, w / 2, h / 2);
   ctx.beginPath();
   ctx.moveTo(x + radius, y);
   ctx.lineTo(x + w - radius, y);
-  ctx.quadraticCurveTo(x + w, y, x + w, y + radius);
+  ctx.arcTo(x + w, y, x + w, y + radius, radius);
   ctx.lineTo(x + w, y + h - radius);
-  ctx.quadraticCurveTo(x + w, y + h, x + w - radius, y + h);
+  ctx.arcTo(x + w, y + h, x + w - radius, y + h, radius);
   ctx.lineTo(x + radius, y + h);
-  ctx.quadraticCurveTo(x, y + h, x, y + h - radius);
+  ctx.arcTo(x, y + h, x, y + h - radius, radius);
   ctx.lineTo(x, y + radius);
-  ctx.quadraticCurveTo(x, y, x + radius, y);
+  ctx.arcTo(x, y, x + radius, y, radius);
   ctx.closePath();
 }
 
-function fmtSol(value) {
-  const n = Number(value);
+function drawGlassCard(ctx, x, y, w, h, r = 20, bg = null, border = null) {
+  ctx.save();
+  roundRect(ctx, x, y, w, h, r);
+  ctx.fillStyle = bg || PALETTE.cardBg;
+  ctx.fill();
+  ctx.strokeStyle = border || PALETTE.cardBorder;
+  ctx.lineWidth = 1.2;
+  ctx.stroke();
+
+  // Subtle top specular highlight (machined glass edge)
+  ctx.beginPath();
+  ctx.moveTo(x + r, y + 1);
+  ctx.lineTo(x + w - r, y + 1);
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.15)';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  ctx.restore();
+}
+
+function fmtSol(val) {
+  const n = Number(val);
   if (!Number.isFinite(n)) return '0.0000';
   const sign = n > 0 ? '+' : n < 0 ? '-' : '';
   return `${sign}${Math.abs(n).toFixed(4)}`;
 }
 
-function fmtPct(value) {
-  const n = Number(value);
-  if (!Number.isFinite(n)) return '0.0%';
+function fmtPct(val) {
+  const n = Number(val);
+  if (!Number.isFinite(n)) return '0.00%';
   const sign = n > 0 ? '+' : n < 0 ? '-' : '';
   return `${sign}${Math.abs(n).toFixed(2)}%`;
 }
 
-function fmtDate(value) {
-  if (!value) {
-    const d = new Date();
-    return d.toISOString().slice(0, 10);
-  }
-  const s = String(value);
-  return s.length >= 10 ? s.slice(0, 10) : s;
-}
-
-function normalizeReport(report) {
+function normalizeReport(report = {}) {
   const best = report.bestTrade || report.best || null;
   const worst = report.worstTrade || report.worst || null;
   const positions = Array.isArray(report.positions) ? report.positions
     : Array.isArray(report.rows) ? report.rows : [];
+
   return {
-    date: fmtDate(report.date),
-    totalTrades: Number(report.totalTrades ?? report.total ?? positions.length ?? 0),
-    wins: Number(report.wins ?? 0),
-    losses: Number(report.losses ?? 0),
-    winRate: Number(report.winRate ?? 0),
-    pnlSol: Number(report.pnlSol ?? report.totalSol ?? 0),
-    pnlPercent: Number(report.pnlPercent ?? 0),
-    bestTrade: best ? {
-      pnlPercent: Number(best.pnlPercent ?? 0),
-      symbol: String(best.symbol || best.mint || '—'),
-    } : null,
-    worstTrade: worst ? {
-      pnlPercent: Number(worst.pnlPercent ?? 0),
-      symbol: String(worst.symbol || worst.mint || '—'),
-    } : null,
-    avgWin: Number(report.avgWin ?? 0),
-    avgLoss: Number(report.avgLoss ?? 0),
-    riskReward: Number(report.riskReward ?? 0),
-    positions,
-    strategy: report.strategy || report.strategyId || 'sniper',
+    totalTrades: Number(report.totalTrades || positions.length || 0),
+    wins: Number(report.wins || 0),
+    losses: Number(report.losses || 0),
+    winRate: Number(report.winRate || 0),
+    pnlSol: Number(report.pnlSol || 0),
+    pnlPercent: Number(report.pnlPercent || 0),
+    bestTrade: best ? { symbol: String(best.symbol || 'N/A'), pnlPercent: Number(best.pnlPercent || 0) } : null,
+    worstTrade: worst ? { symbol: String(worst.symbol || 'N/A'), pnlPercent: Number(worst.pnlPercent || 0) } : null,
+    avgWin: Number(report.avgWin || 0),
+    avgLoss: Number(report.avgLoss || 0),
+    riskReward: Number(report.riskReward || 0),
+    strategy: String(report.strategy || 'SNIPER').toUpperCase(),
+    positions: positions.map(p => ({
+      symbol: String(p.symbol || 'TOKEN').replace(/^\$/, ''),
+      pnlPercent: Number(p.pnlPercent || 0),
+      pnlSol: Number(p.pnlSol || 0),
+      exitReason: String(p.exitReason || p.exit_reason || 'TP/SL'),
+    })),
+    // Overridable branding so the same card renders monthly reports too
+    badge: String(report.badge || 'DAILY INTELLIGENCE V2'),
+    pill: String(report.pill || '● LIVE'),
+    dateLabel: String(report.dateLabel || `${new Date().toISOString().slice(0, 10)} WIB`),
   };
 }
 
-function drawBackground(ctx) {
-  // Deep space subtle gradient
-  const grad = ctx.createLinearGradient(0, 0, 0, H);
-  grad.addColorStop(0, COLOR_BG_TOP);
-  grad.addColorStop(1, COLOR_BG_BOTTOM);
-  ctx.fillStyle = grad;
-  ctx.fillRect(0, 0, W, H);
-
-  // Subtle ambient radial glow behind hero PNL
-  const radialGlow = ctx.createRadialGradient(W / 2, 260, 40, W / 2, 260, 400);
-  radialGlow.addColorStop(0, 'rgba(139, 92, 246, 0.12)');
-  radialGlow.addColorStop(0.6, 'rgba(6, 182, 212, 0.04)');
-  radialGlow.addColorStop(1, 'rgba(0, 0, 0, 0)');
-  ctx.fillStyle = radialGlow;
-  ctx.fillRect(0, 0, W, H);
-
-  // Geometric subtle ambient grid
-  ctx.save();
-  ctx.strokeStyle = 'rgba(255, 255, 255, 0.02)';
-  ctx.lineWidth = 1;
-  const gridSize = 40;
-  for (let x = 0; x < W; x += gridSize) {
-    ctx.beginPath();
-    ctx.moveTo(x, 0);
-    ctx.lineTo(x, H);
-    ctx.stroke();
-  }
-  for (let y = 0; y < H; y += gridSize) {
-    ctx.beginPath();
-    ctx.moveTo(0, y);
-    ctx.lineTo(W, y);
-    ctx.stroke();
-  }
-  ctx.restore();
-}
-
-function drawHeader(ctx, report) {
-  const padX = 40;
-  const topY = 48;
-
-  // Charon Logo mark / symbol
-  ctx.save();
-  const logoX = padX;
-  const logoY = topY;
-  const logoSize = 36;
-
-  // Logo container
-  const logoGrad = ctx.createLinearGradient(logoX, logoY, logoX + logoSize, logoY + logoSize);
-  logoGrad.addColorStop(0, BRAND_PURPLE);
-  logoGrad.addColorStop(1, BRAND_CYAN);
-  ctx.fillStyle = logoGrad;
-  roundedRect(ctx, logoX, logoY, logoSize, logoSize, 8);
-  ctx.fill();
-
-  // Logo geometric icon (Skull / Delta mark stylized)
-  ctx.fillStyle = '#FFFFFF';
-  ctx.font = 'bold 18px "DejaVu Sans", sans-serif';
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillText('⚡', logoX + logoSize / 2, logoY + logoSize / 2 + 1);
-
-  // Bot Brand Title
-  ctx.textAlign = 'left';
-  ctx.textBaseline = 'top';
-  ctx.font = 'bold 22px "DejaVu Sans", sans-serif';
-  ctx.fillStyle = TEXT_PRIMARY;
-  ctx.fillText('CHARON', logoX + logoSize + 14, logoY);
-
-  // Subtitle / Strategy tag
-  ctx.font = '600 11px "DejaVu Sans", sans-serif';
-  ctx.fillStyle = TEXT_MUTED;
-  ctx.fillText(`SOLANA TRADING BOT · ${report.strategy.toUpperCase()}`, logoX + logoSize + 14, logoY + 22);
-
-  // Right Date & Live Badge
-  const dateStr = report.date;
-  ctx.font = '600 12px "DejaVu Sans", sans-serif';
-  const dateW = ctx.measureText(dateStr).width + 24;
-  const dateX = W - padX - dateW;
-  const dateY = topY + 4;
-
-  ctx.fillStyle = 'rgba(255, 255, 255, 0.05)';
-  roundedRect(ctx, dateX, dateY, dateW, 28, 6);
-  ctx.fill();
-  ctx.strokeStyle = CARD_BORDER;
-  ctx.lineWidth = 1;
-  ctx.stroke();
-
-  ctx.fillStyle = TEXT_SECONDARY;
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillText(dateStr, dateX + dateW / 2, dateY + 14);
-
-  ctx.restore();
-}
-
-function drawHeroPnlCard(ctx, report) {
-  const padX = 40;
-  const y = 110;
-  const w = W - padX * 2;
-  const h = 230;
-
+export async function generateDailyCard(rawReport = {}) {
+  const report = normalizeReport(rawReport);
   const isProfit = report.pnlSol >= 0;
-  const accentColor = isProfit ? PROFIT : LOSS;
-  const accentDim = isProfit ? PROFIT_DIM : LOSS_DIM;
-  const accentBg = isProfit ? PROFIT_BG : LOSS_BG;
-
-  ctx.save();
-
-  // Glass Card Background
-  const cardGrad = ctx.createLinearGradient(padX, y, padX, y + h);
-  cardGrad.addColorStop(0, CARD_BG_ELEVATED);
-  cardGrad.addColorStop(1, CARD_BG);
-  ctx.fillStyle = cardGrad;
-  roundedRect(ctx, padX, y, w, h, 16);
-  ctx.fill();
-
-  // Card Outer Glow & Border
-  ctx.strokeStyle = isProfit ? 'rgba(0, 240, 144, 0.25)' : 'rgba(255, 59, 86, 0.25)';
-  ctx.lineWidth = 1.5;
-  ctx.stroke();
-
-  // Top header inside Hero Card
-  ctx.font = '700 11px "DejaVu Sans", sans-serif';
-  ctx.fillStyle = TEXT_MUTED;
-  ctx.textAlign = 'left';
-  ctx.textBaseline = 'top';
-  ctx.fillText('REALIZED NET PROFIT / LOSS', padX + 24, y + 24);
-
-  // Status Badge Pill (PROFIT / LOSS / BREAKEVEN)
-  const statusText = report.pnlSol > 0 ? 'PROFIT' : report.pnlSol < 0 ? 'LOSS' : 'BREAK-EVEN';
-  ctx.font = 'bold 11px "DejaVu Sans", sans-serif';
-  const badgeW = ctx.measureText(statusText).width + 20;
-  const badgeX = padX + w - 24 - badgeW;
-  const badgeY = y + 20;
-
-  ctx.fillStyle = accentBg;
-  roundedRect(ctx, badgeX, badgeY, badgeW, 24, 12);
-  ctx.fill();
-  ctx.strokeStyle = accentDim;
-  ctx.lineWidth = 1;
-  ctx.stroke();
-
-  ctx.fillStyle = accentColor;
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillText(statusText, badgeX + badgeW / 2, badgeY + 12);
-
-  // Huge Net SOL PnL Display
-  const solText = `${fmtSol(report.pnlSol)} SOL`;
-  ctx.font = 'bold 54px "DejaVu Sans", sans-serif';
-  ctx.fillStyle = accentColor;
-  ctx.textAlign = 'left';
-  ctx.textBaseline = 'top';
-  ctx.fillText(solText, padX + 24, y + 58);
-
-  // Percentage Badge & Subtitle
-  const pctText = `${fmtPct(report.pnlPercent)} Return`;
-  ctx.font = 'bold 16px "DejaVu Sans", sans-serif';
-  ctx.fillStyle = isProfit ? '#A7F3D0' : '#FECDD3';
-  ctx.fillText(pctText, padX + 24, y + 128);
-
-  // Inline Bottom Metrics Bar inside Hero Card
-  const innerBarY = y + 164;
-  const innerBarH = 46;
-  const innerBarW = w - 48;
-  const innerBarX = padX + 24;
-
-  ctx.fillStyle = 'rgba(0, 0, 0, 0.25)';
-  roundedRect(ctx, innerBarX, innerBarY, innerBarW, innerBarH, 10);
-  ctx.fill();
-  ctx.strokeStyle = 'rgba(255, 255, 255, 0.04)';
-  ctx.lineWidth = 1;
-  ctx.stroke();
-
-  // 3 Mini columns in hero card bottom
-  const colW = innerBarW / 3;
-  
-  // Trades Count
-  ctx.textAlign = 'left';
-  ctx.textBaseline = 'middle';
-  ctx.font = '600 11px "DejaVu Sans", sans-serif';
-  ctx.fillStyle = TEXT_MUTED;
-  ctx.fillText('Trades:', innerBarX + 16, innerBarY + innerBarH / 2);
-  ctx.font = 'bold 12px "DejaVu Sans", sans-serif';
-  ctx.fillStyle = TEXT_PRIMARY;
-  ctx.fillText(`${report.totalTrades} (${report.wins}W / ${report.losses}L)`, innerBarX + 66, innerBarY + innerBarH / 2);
-
-  // Win Rate
-  const col2X = innerBarX + colW;
-  ctx.font = '600 11px "DejaVu Sans", sans-serif';
-  ctx.fillStyle = TEXT_MUTED;
-  ctx.fillText('Win Rate:', col2X + 12, innerBarY + innerBarH / 2);
-  ctx.font = 'bold 12px "DejaVu Sans", sans-serif';
-  ctx.fillStyle = report.winRate >= 50 ? PROFIT : LOSS;
-  ctx.fillText(`${report.winRate.toFixed(1)}%`, col2X + 76, innerBarY + innerBarH / 2);
-
-  // Risk / Reward
-  const col3X = innerBarX + colW * 2;
-  ctx.font = '600 11px "DejaVu Sans", sans-serif';
-  ctx.fillStyle = TEXT_MUTED;
-  ctx.fillText('R:R Ratio:', col3X + 12, innerBarY + innerBarH / 2);
-  ctx.font = 'bold 12px "DejaVu Sans", sans-serif';
-  ctx.fillStyle = report.riskReward >= 1 ? PROFIT : TEXT_PRIMARY;
-  const rrStr = report.riskReward > 0 ? `1:${report.riskReward.toFixed(2)}` : '—';
-  ctx.fillText(rrStr, col3X + 80, innerBarY + innerBarH / 2);
-
-  ctx.restore();
-}
-
-function drawMetricGrid(ctx, report) {
-  const padX = 40;
-  const y = 360;
-  const gap = 16;
-  const w = (W - padX * 2 - gap) / 2;
-  const h = 100;
-
-  // Box 1: Avg Win
-  drawMetricCard(
-    ctx, padX, y, w, h,
-    'AVG WINNING TRADE',
-    fmtPct(report.avgWin),
-    'Per profitable position',
-    PROFIT,
-    '▲'
-  );
-
-  // Box 2: Avg Loss
-  drawMetricCard(
-    ctx, padX + w + gap, y, w, h,
-    'AVG LOSING TRADE',
-    fmtPct(report.avgLoss),
-    'Per stopped out position',
-    LOSS,
-    '▼'
-  );
-
-  // Row 2: Best & Worst Trade Cards
-  const y2 = y + h + gap;
-
-  // Box 3: Best Trade
-  const bestSymbol = report.bestTrade ? `$${report.bestTrade.symbol}` : '—';
-  const bestPct = report.bestTrade ? fmtPct(report.bestTrade.pnlPercent) : '—';
-  drawTradeHighlightCard(
-    ctx, padX, y2, w, h,
-    'TOP PERFORMER',
-    bestSymbol,
-    bestPct,
-    PROFIT,
-    '💎'
-  );
-
-  // Box 4: Worst Trade
-  const worstSymbol = report.worstTrade ? `$${report.worstTrade.symbol}` : '—';
-  const worstPct = report.worstTrade ? fmtPct(report.worstTrade.pnlPercent) : '—';
-  drawTradeHighlightCard(
-    ctx, padX + w + gap, y2, w, h,
-    'MAX DRAWDOWN TRADE',
-    worstSymbol,
-    worstPct,
-    LOSS,
-    '⚠️'
-  );
-}
-
-function drawMetricCard(ctx, x, y, w, h, label, value, subtext, valueColor, icon) {
-  ctx.save();
-  ctx.fillStyle = CARD_BG;
-  roundedRect(ctx, x, y, w, h, 14);
-  ctx.fill();
-  ctx.strokeStyle = CARD_BORDER;
-  ctx.lineWidth = 1;
-  ctx.stroke();
-
-  // Top Label
-  ctx.textAlign = 'left';
-  ctx.textBaseline = 'top';
-  ctx.font = '700 10px "DejaVu Sans", sans-serif';
-  ctx.fillStyle = TEXT_MUTED;
-  ctx.fillText(label, x + 18, y + 16);
-
-  // Main Value with subtle icon
-  ctx.font = 'bold 24px "DejaVu Sans", sans-serif';
-  ctx.fillStyle = valueColor;
-  ctx.fillText(value, x + 18, y + 36);
-
-  // Subtext
-  ctx.font = '500 11px "DejaVu Sans", sans-serif';
-  ctx.fillStyle = TEXT_SECONDARY;
-  ctx.fillText(subtext, x + 18, y + 70);
-
-  ctx.restore();
-}
-
-function drawTradeHighlightCard(ctx, x, y, w, h, label, symbol, pct, valueColor, badgeIcon) {
-  ctx.save();
-  ctx.fillStyle = CARD_BG;
-  roundedRect(ctx, x, y, w, h, 14);
-  ctx.fill();
-  ctx.strokeStyle = CARD_BORDER;
-  ctx.lineWidth = 1;
-  ctx.stroke();
-
-  // Top Label
-  ctx.textAlign = 'left';
-  ctx.textBaseline = 'top';
-  ctx.font = '700 10px "DejaVu Sans", sans-serif';
-  ctx.fillStyle = TEXT_MUTED;
-  ctx.fillText(label, x + 18, y + 16);
-
-  // Symbol name
-  ctx.font = 'bold 20px "DejaVu Sans", sans-serif';
-  ctx.fillStyle = TEXT_PRIMARY;
-  ctx.fillText(symbol, x + 18, y + 40);
-
-  // PnL Value on right side
-  ctx.textAlign = 'right';
-  ctx.font = 'bold 20px "DejaVu Sans", sans-serif';
-  ctx.fillStyle = valueColor;
-  ctx.fillText(pct, x + w - 18, y + 40);
-
-  // Sub indicator line
-  ctx.font = '500 11px "DejaVu Sans", sans-serif';
-  ctx.fillStyle = TEXT_MUTED;
-  ctx.textAlign = 'left';
-  ctx.fillText('Closed Trade PnL', x + 18, y + 70);
-
-  ctx.restore();
-}
-
-function drawDistributionAndBarChart(ctx, report) {
-  const padX = 40;
-  const y = 600;
-  const w = W - padX * 2;
-  const h = 210;
-
-  ctx.save();
-  ctx.fillStyle = CARD_BG;
-  roundedRect(ctx, padX, y, w, h, 14);
-  ctx.fill();
-  ctx.strokeStyle = CARD_BORDER;
-  ctx.lineWidth = 1;
-  ctx.stroke();
-
-  // Section Header
-  ctx.textAlign = 'left';
-  ctx.textBaseline = 'top';
-  ctx.font = '700 11px "DejaVu Sans", sans-serif';
-  ctx.fillStyle = TEXT_MUTED;
-  ctx.fillText('TRADE DISTRIBUTION & SEQUENCE', padX + 20, y + 18);
-
-  const positions = report.positions || [];
-  const count = positions.length;
-
-  if (count === 0) {
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.font = '500 14px "DejaVu Sans", sans-serif';
-    ctx.fillStyle = TEXT_MUTED;
-    ctx.fillText('No trade positions recorded today.', padX + w / 2, y + h / 2);
-    ctx.restore();
-    return;
-  }
-
-  // Win / Loss Progress bar overview
-  const barY = y + 44;
-  const barH = 12;
-  const barW = w - 40;
-  const barX = padX + 20;
-
-  const winRatio = report.totalTrades > 0 ? report.wins / report.totalTrades : 0;
-  const winBarW = Math.round(barW * winRatio);
-  const lossBarW = barW - winBarW;
-
-  // Background track
-  ctx.fillStyle = 'rgba(255, 255, 255, 0.06)';
-  roundedRect(ctx, barX, barY, barW, barH, 6);
-  ctx.fill();
-
-  if (winBarW > 0) {
-    ctx.fillStyle = PROFIT;
-    roundedRect(ctx, barX, barY, Math.max(winBarW, 6), barH, 6);
-    ctx.fill();
-  }
-  if (lossBarW > 0 && winRatio < 1) {
-    ctx.fillStyle = LOSS;
-    roundedRect(ctx, barX + winBarW, barY, lossBarW, barH, 6);
-    ctx.fill();
-  }
-
-  // Distribution legend
-  ctx.font = '600 11px "DejaVu Sans", sans-serif';
-  ctx.textAlign = 'left';
-  ctx.fillStyle = PROFIT;
-  ctx.fillText(`● ${report.wins} Wins (${(winRatio * 100).toFixed(0)}%)`, barX, barY + 22);
-
-  ctx.textAlign = 'right';
-  ctx.fillStyle = LOSS;
-  ctx.fillText(`● ${report.losses} Losses (${((1 - winRatio) * 100).toFixed(0)}%)`, barX + barW, barY + 22);
-
-  // Historical Bar Chart (Last N positions)
-  const chartY = y + 90;
-  const chartH = 100;
-  const chartW = barW;
-  const chartX = barX;
-
-  const chartPositions = positions.slice(0, 24); // Show up to 24 bars
-  const numBars = chartPositions.length;
-  const barGap = 4;
-  const singleBarW = Math.max(4, (chartW - barGap * (numBars - 1)) / numBars);
-
-  const midLineY = chartY + chartH / 2 + 8;
-
-  // Baseline zero line
-  ctx.strokeStyle = 'rgba(255, 255, 255, 0.12)';
-  ctx.lineWidth = 1;
-  ctx.beginPath();
-  ctx.moveTo(chartX, midLineY);
-  ctx.lineTo(chartX + chartW, midLineY);
-  ctx.stroke();
-
-  // Find max abs pnl for proper relative scaling
-  let maxVal = 0;
-  for (const pos of chartPositions) {
-    const val = Math.abs(Number(pos.pnlPercent || 0));
-    if (val > maxVal) maxVal = val;
-  }
-  if (maxVal === 0) maxVal = 1;
-
-  for (let i = 0; i < numBars; i++) {
-    const pos = chartPositions[i];
-    const val = Number(pos.pnlPercent || 0);
-    const isUp = val >= 0;
-    const barHeight = Math.max(3, (Math.abs(val) / maxVal) * (chartH / 2 - 12));
-    const bx = chartX + i * (singleBarW + barGap);
-
-    ctx.fillStyle = isUp ? PROFIT : LOSS;
-    if (isUp) {
-      roundedRect(ctx, bx, midLineY - barHeight, singleBarW, barHeight, 2);
-      ctx.fill();
-    } else {
-      roundedRect(ctx, bx, midLineY, singleBarW, barHeight, 2);
-      ctx.fill();
-    }
-  }
-
-  ctx.restore();
-}
-
-function drawRecentTradesTable(ctx, report) {
-  const padX = 40;
-  const y = 826;
-  const w = W - padX * 2;
-  const h = 210;
-
-  ctx.save();
-  ctx.fillStyle = CARD_BG;
-  roundedRect(ctx, padX, y, w, h, 14);
-  ctx.fill();
-  ctx.strokeStyle = CARD_BORDER;
-  ctx.lineWidth = 1;
-  ctx.stroke();
-
-  // Header Title
-  ctx.textAlign = 'left';
-  ctx.textBaseline = 'top';
-  ctx.font = '700 11px "DejaVu Sans", sans-serif';
-  ctx.fillStyle = TEXT_MUTED;
-  ctx.fillText('RECENT CLOSED POSITIONS', padX + 20, y + 16);
-
-  const positions = (report.positions || []).slice(0, 4); // Top 4 recent positions
-  if (positions.length === 0) {
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.font = '500 13px "DejaVu Sans", sans-serif';
-    ctx.fillStyle = TEXT_MUTED;
-    ctx.fillText('No closed trades in this session.', padX + w / 2, y + h / 2 + 10);
-    ctx.restore();
-    return;
-  }
-
-  // Draw 4 rows
-  const rowStartY = y + 42;
-  const rowHeight = 38;
-
-  for (let i = 0; i < positions.length; i++) {
-    const pos = positions[i];
-    const ry = rowStartY + i * rowHeight;
-    const isUp = Number(pos.pnlPercent || 0) >= 0;
-    const accent = isUp ? PROFIT : LOSS;
-
-    // Alternating subtle row background
-    if (i % 2 === 1) {
-      ctx.fillStyle = 'rgba(255, 255, 255, 0.02)';
-      roundedRect(ctx, padX + 12, ry, w - 24, rowHeight - 4, 6);
-      ctx.fill();
-    }
-
-    // Symbol
-    ctx.textAlign = 'left';
-    ctx.textBaseline = 'middle';
-    ctx.font = 'bold 13px "DejaVu Sans", sans-serif';
-    ctx.fillStyle = TEXT_PRIMARY;
-    ctx.fillText(`$${pos.symbol || 'UNKNOWN'}`, padX + 24, ry + (rowHeight - 4) / 2);
-
-    // Direction Tag
-    ctx.font = '600 10px "DejaVu Sans", sans-serif';
-    ctx.fillStyle = isUp ? PROFIT : LOSS;
-    ctx.fillText(isUp ? 'WIN' : 'LOSS', padX + 180, ry + (rowHeight - 4) / 2);
-
-    // PnL %
-    ctx.textAlign = 'right';
-    ctx.font = 'bold 13px "DejaVu Sans", sans-serif';
-    ctx.fillStyle = accent;
-    ctx.fillText(fmtPct(pos.pnlPercent), padX + w - 24, ry + (rowHeight - 4) / 2);
-  }
-
-  ctx.restore();
-}
-
-function drawFooter(ctx, report) {
-  const padX = 40;
-  const footerY = H - 42;
-
-  ctx.save();
-  ctx.textBaseline = 'middle';
-
-  // Left side: Bot status
-  ctx.textAlign = 'left';
-  ctx.font = '600 11px "DejaVu Sans", sans-serif';
-  ctx.fillStyle = TEXT_MUTED;
-  ctx.fillText('CHARON TRADING SYSTEM · HIGH FREQUENCY SNIPER', padX, footerY);
-
-  // Right side: Timestamp
-  ctx.textAlign = 'right';
-  ctx.font = '500 11px "DejaVu Sans", sans-serif';
-  ctx.fillStyle = TEXT_MUTED;
-  const nowStr = new Date().toISOString().slice(11, 19) + ' UTC';
-  ctx.fillText(`Generated ${nowStr}`, W - padX, footerY);
-
-  ctx.restore();
-}
-
-export async function generateDailyCard(report) {
-  if (!report || typeof report !== 'object') {
-    throw new Error('generateDailyCard: report object is required');
-  }
-  const data = normalizeReport(report);
+  const accentColor = isProfit ? PALETTE.profitGreen : PALETTE.lossRed;
+  const accentMuted = isProfit ? PALETTE.profitGreenMuted : PALETTE.lossRedMuted;
+  const accentGlow = isProfit ? PALETTE.profitGlow : PALETTE.lossGlow;
+  const accentBorder = isProfit ? PALETTE.profitBorder : PALETTE.lossBorder;
 
   const canvas = createCanvas(W, H);
   const ctx = canvas.getContext('2d');
-  ctx.antialias = 'subpixel';
-  ctx.patternQuality = 'bilinear';
-  ctx.quality = 'bilinear';
 
-  drawBackground(ctx);
-  drawHeader(ctx, data);
-  drawHeroPnlCard(ctx, data);
-  drawMetricGrid(ctx, data);
-  drawDistributionAndBarChart(ctx, data);
-  drawRecentTradesTable(ctx, data);
-  drawFooter(ctx, data);
+  // 1. Deep Space Obsidian Background
+  const bgGrad = ctx.createRadialGradient(W / 2, 220, 40, W / 2, H / 2, 950);
+  bgGrad.addColorStop(0, isProfit ? '#0E1D22' : '#1F0F17');
+  bgGrad.addColorStop(0.4, '#0A0E17');
+  bgGrad.addColorStop(1, '#030508');
+  ctx.fillStyle = bgGrad;
+  ctx.fillRect(0, 0, W, H);
+
+  // Subtle ambient glow orbs
+  ctx.save();
+  const orb1 = ctx.createRadialGradient(180, 180, 10, 180, 180, 400);
+  orb1.addColorStop(0, accentGlow);
+  orb1.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = orb1;
+  ctx.fillRect(0, 0, W, H);
+
+  const orb2 = ctx.createRadialGradient(W - 160, 480, 10, W - 160, 480, 420);
+  orb2.addColorStop(0, 'rgba(56, 189, 248, 0.10)');
+  orb2.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = orb2;
+  ctx.fillRect(0, 0, W, H);
+  ctx.restore();
+
+  // Subtle background dot grid pattern
+  ctx.save();
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.04)';
+  for (let x = 30; x < W; x += 32) {
+    for (let y = 30; y < H; y += 32) {
+      ctx.beginPath();
+      ctx.arc(x, y, 1.2, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+  ctx.restore();
+
+  // 2. HEADER BAR
+  const pad = 44;
+  const headerY = 44;
+  const headerW = W - pad * 2;
+  const headerH = 80;
+
+  drawGlassCard(ctx, pad, headerY, headerW, headerH, 18, 'rgba(15, 23, 42, 0.75)', PALETTE.cardBorderLight);
+
+  // Logo Icon (Geometric Neon Emblem)
+  const iconX = pad + 24;
+  const iconY = headerY + 22;
+  roundRect(ctx, iconX, iconY, 36, 36, 10);
+  ctx.fillStyle = accentMuted;
+  ctx.fill();
+  ctx.strokeStyle = accentBorder;
+  ctx.lineWidth = 1.2;
+  ctx.stroke();
+
+  ctx.font = 'bold 20px "JetBrainsMono", monospace';
+  ctx.fillStyle = accentColor;
+  ctx.textAlign = 'center';
+  ctx.fillText('⚡', iconX + 18, iconY + 25);
+  ctx.textAlign = 'left';
+
+  // Title Text
+  ctx.font = 'bold 22px "Inter", "DejaVu Sans", sans-serif';
+  ctx.fillStyle = PALETTE.textPrimary;
+  ctx.fillText('CHARON', iconX + 48, headerY + 46);
+
+  ctx.font = 'bold 12px "JetBrainsMono", monospace';
+  ctx.fillStyle = PALETTE.brandCyan;
+  ctx.fillText(report.badge, iconX + 160, headerY + 45);
+
+  // Mode & Date
+  // Date badge (right-aligned against the pill so long ranges don't collide)
+  ctx.font = '500 13px "JetBrainsMono", monospace';
+  ctx.fillStyle = PALETTE.textSecondary;
+  const dateText = report.dateLabel;
+  ctx.textAlign = 'right';
+  ctx.fillText(dateText, pad + headerW - 136, headerY + 46);
+  ctx.textAlign = 'left';
+
+  // Distinct Live Badge Pill (Always LIVE per TASK-CHARON-IMG-002)
+  const pillW = 100;
+  const pillH = 34;
+  const pillX = pad + headerW - pillW - 20;
+  const pillY = headerY + 23;
+  roundRect(ctx, pillX, pillY, pillW, pillH, 8);
+
+  ctx.fillStyle = 'rgba(0, 242, 157, 0.18)'; // Emerald translucent
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(0, 242, 157, 0.6)';
+  ctx.lineWidth = 1.4;
+  ctx.stroke();
+
+  ctx.font = 'bold 12px "JetBrainsMono", monospace';
+  ctx.fillStyle = PALETTE.profitGreen;
+  ctx.textAlign = 'center';
+  ctx.fillText(report.pill, pillX + pillW / 2, pillY + 21);
+  ctx.textAlign = 'left';
+
+  // 3. HERO PNL BENTO CARD (Split: Net PnL + Winrate Radial/Meter Box)
+  const heroY = 144;
+  const heroH = 248;
+  drawGlassCard(ctx, pad, heroY, headerW, heroH, 24, 'rgba(16, 24, 39, 0.88)', accentBorder);
+
+  // Left vertical glowing neon bar
+  ctx.save();
+  ctx.fillStyle = accentColor;
+  roundRect(ctx, pad + 6, heroY + 24, 5, heroH - 48, 3);
+  ctx.fill();
+  ctx.restore();
+
+  // Header Subtitles
+  ctx.font = '600 13px "Inter", "DejaVu Sans", sans-serif';
+  ctx.fillStyle = PALETTE.textSecondary;
+  ctx.fillText('NET REALIZED PERFORMANCE', pad + 32, heroY + 46);
+
+  // Strategy Pill
+  const stratX = pad + 270;
+  const stratY = heroY + 31;
+  roundRect(ctx, stratX, stratY, 130, 22, 6);
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.05)';
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.1)';
+  ctx.stroke();
+  ctx.font = 'bold 11px "JetBrainsMono", monospace';
+  ctx.fillStyle = PALETTE.brandPurple;
+  ctx.fillText(`STRATEGY: ${report.strategy}`, stratX + 10, stratY + 15);
+
+  // Big Bold PnL in SOL
+  const pnlSolFormatted = `${fmtSol(report.pnlSol)} SOL`;
+  ctx.font = 'bold 58px "Inter", "DejaVu Sans", sans-serif';
+  ctx.fillStyle = accentColor;
+  ctx.fillText(pnlSolFormatted, pad + 32, heroY + 124);
+
+  // Large Percentage Pill
+  const pctStr = `${fmtPct(report.pnlPercent)} AVG`;
+  ctx.font = 'bold 18px "JetBrainsMono", monospace';
+  const pctMetrics = ctx.measureText(pctStr);
+  const pctPillW = pctMetrics.width + 36;
+  const pctPillH = 38;
+  const pctPillX = pad + 32;
+  const pctPillY = heroY + 156;
+
+  roundRect(ctx, pctPillX, pctPillY, pctPillW, pctPillH, 10);
+  ctx.fillStyle = accentMuted;
+  ctx.fill();
+  ctx.strokeStyle = accentBorder;
+  ctx.lineWidth = 1.2;
+  ctx.stroke();
+
+  ctx.fillStyle = accentColor;
+  ctx.fillText(pctStr, pctPillX + 18, pctPillY + 25);
+
+  // Hero Right Column: Trade Win/Loss Box with Visual Bar
+  const statBoxX = pad + headerW - 330;
+  const statBoxY = heroY + 28;
+  const statBoxW = 302;
+  const statBoxH = heroH - 56;
+
+  drawGlassCard(ctx, statBoxX, statBoxY, statBoxW, statBoxH, 18, 'rgba(10, 15, 26, 0.85)', 'rgba(255,255,255,0.08)');
+
+  ctx.font = '600 12px "Inter", "DejaVu Sans", sans-serif';
+  ctx.fillStyle = PALETTE.textSecondary;
+  ctx.fillText('WIN / LOSS DISTRIBUTION', statBoxX + 20, statBoxY + 30);
+
+  // Win vs Loss Counts
+  ctx.font = 'bold 26px "JetBrainsMono", monospace';
+  ctx.fillStyle = PALETTE.profitGreen;
+  ctx.fillText(`${report.wins}W`, statBoxX + 20, statBoxY + 68);
+  const wWidth = ctx.measureText(`${report.wins}W`).width;
+
+  ctx.fillStyle = PALETTE.textGhost;
+  ctx.fillText(' / ', statBoxX + 20 + wWidth, statBoxY + 68);
+  const slashWidth = ctx.measureText(' / ').width;
+
+  ctx.fillStyle = PALETTE.lossRed;
+  ctx.fillText(`${report.losses}L`, statBoxX + 20 + wWidth + slashWidth, statBoxY + 68);
+
+  // Segmented Multi-Bar Visual Progress
+  const barX = statBoxX + 20;
+  const barY = statBoxY + 94;
+  const barW = statBoxW - 40;
+  const barH = 14;
+
+  roundRect(ctx, barX, barY, barW, barH, 6);
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.08)';
+  ctx.fill();
+
+  const winFillW = Math.max(0, Math.min(barW, (report.winRate / 100) * barW));
+  if (winFillW > 0) {
+    roundRect(ctx, barX, barY, winFillW, barH, 6);
+    ctx.fillStyle = PALETTE.profitGreen;
+    ctx.fill();
+  }
+
+  // Winrate Label & Total Trades
+  ctx.font = 'bold 16px "JetBrainsMono", monospace';
+  ctx.fillStyle = PALETTE.textPrimary;
+  ctx.fillText(`${report.winRate.toFixed(1)}% WINRATE`, statBoxX + 20, statBoxY + 144);
+
+  ctx.font = '500 12px "Inter", "DejaVu Sans", sans-serif';
+  ctx.fillStyle = PALETTE.textMuted;
+  ctx.fillText(`${report.totalTrades} Executed Orders`, statBoxX + 20, statBoxY + 168);
+
+  // 4. BENTO ROW 2: Key Analytics Matrix (4 Cards)
+  const row2Y = 412;
+  const colGap = 16;
+  const colW = (headerW - colGap * 3) / 4;
+  const row2H = 120;
+
+  const metricCards = [
+    { label: 'PROFIT FACTOR', val: `1:${report.riskReward.toFixed(2)}`, sub: 'Risk / Reward Ratio', color: PALETTE.brandCyan },
+    { label: 'AVERAGE GAIN', val: fmtPct(report.avgWin), sub: `${report.wins} Winner trades`, color: PALETTE.profitGreen },
+    { label: 'AVERAGE LOSS', val: fmtPct(report.avgLoss), sub: `${report.losses} Stopped trades`, color: PALETTE.lossRed },
+    { label: 'BEST ALPHA', val: report.bestTrade ? fmtPct(report.bestTrade.pnlPercent) : '0.00%', sub: report.bestTrade ? `$${report.bestTrade.symbol}` : 'No trades', color: PALETTE.profitGreen },
+  ];
+
+  metricCards.forEach((card, idx) => {
+    const cardX = pad + idx * (colW + colGap);
+    drawGlassCard(ctx, cardX, row2Y, colW, row2H, 16, PALETTE.cardBg, PALETTE.cardBorder);
+
+    ctx.font = '600 11px "Inter", "DejaVu Sans", sans-serif';
+    ctx.fillStyle = PALETTE.textSecondary;
+    ctx.fillText(card.label, cardX + 16, row2Y + 28);
+
+    ctx.font = 'bold 22px "JetBrainsMono", monospace';
+    ctx.fillStyle = card.color;
+    ctx.fillText(card.val, cardX + 16, row2Y + 68);
+
+    ctx.font = '500 11px "Inter", "DejaVu Sans", sans-serif';
+    ctx.fillStyle = PALETTE.textMuted;
+    ctx.fillText(card.sub, cardX + 16, row2Y + 98);
+  });
+
+  // 5. BENTO ROW 3: TRADE EXECUTION LOG (Terminal/DexScreener Card)
+  const tableY = 552;
+  const tableH = 690;
+  drawGlassCard(ctx, pad, tableY, headerW, tableH, 22, PALETTE.cardBgElevated, PALETTE.cardBorderLight);
+
+  // Table Title Header
+  ctx.font = 'bold 18px "Inter", "DejaVu Sans", sans-serif';
+  ctx.fillStyle = PALETTE.textPrimary;
+  ctx.fillText('LIVE EXECUTION TELEMETRY', pad + 24, tableY + 42);
+
+  ctx.font = '500 13px "Inter", "DejaVu Sans", sans-serif';
+  ctx.fillStyle = PALETTE.textMuted;
+  ctx.fillText(`Detailed session order fills & exit reasons`, pad + 300, tableY + 41);
+
+  // Table Column Headers
+  const thY = tableY + 84;
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.04)';
+  roundRect(ctx, pad + 16, thY - 24, headerW - 32, 40, 10);
+  ctx.fill();
+
+  ctx.font = 'bold 11px "Inter", "DejaVu Sans", sans-serif';
+  ctx.fillStyle = PALETTE.textSecondary;
+  ctx.fillText('#', pad + 32, thY + 2);
+  ctx.fillText('ASSET PAIR', pad + 76, thY + 2);
+  ctx.fillText('EXIT REASON', pad + 310, thY + 2);
+  ctx.fillText('REALIZED (SOL)', pad + 520, thY + 2);
+  ctx.textAlign = 'right';
+  ctx.fillText('RETURN %', pad + headerW - 32, thY + 2);
+  ctx.textAlign = 'left';
+
+  // Table Rows (Max 7 rows)
+  const rows = report.positions.slice(0, 7);
+  const rowH = 72;
+  const startRowY = thY + 32;
+
+  if (rows.length === 0) {
+    ctx.font = '500 15px "Inter", "DejaVu Sans", sans-serif';
+    ctx.fillStyle = PALETTE.textMuted;
+    ctx.textAlign = 'center';
+    ctx.fillText('No closed positions logged for this session yet.', W / 2, tableY + tableH / 2);
+    ctx.textAlign = 'left';
+  } else {
+    rows.forEach((row, i) => {
+      const currentY = startRowY + i * rowH;
+      const isItemProfit = row.pnlSol >= 0 || row.pnlPercent >= 0;
+      const rowAccent = isItemProfit ? PALETTE.profitGreen : PALETTE.lossRed;
+      const rowBg = i % 2 === 0 ? 'rgba(255, 255, 255, 0.02)' : 'rgba(0, 0, 0, 0.2)';
+
+      // Row container
+      roundRect(ctx, pad + 16, currentY - 14, headerW - 32, rowH - 8, 12);
+      ctx.fillStyle = rowBg;
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.03)';
+      ctx.stroke();
+
+      // Row index
+      ctx.font = '500 13px "JetBrainsMono", monospace';
+      ctx.fillStyle = PALETTE.textMuted;
+      ctx.fillText(`0${i + 1}`, pad + 32, currentY + 26);
+
+      // Asset Symbol Badge
+      const tokenSym = `$${row.symbol.toUpperCase()}`;
+      ctx.font = 'bold 16px "Inter", "DejaVu Sans", sans-serif';
+      ctx.fillStyle = PALETTE.textPrimary;
+      ctx.fillText(tokenSym, pad + 76, currentY + 26);
+
+      // Exit Reason tag
+      roundRect(ctx, pad + 310, currentY + 6, 130, 26, 6);
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.06)';
+      ctx.fill();
+
+      ctx.font = '600 11px "JetBrainsMono", monospace';
+      ctx.fillStyle = PALETTE.textSecondary;
+      ctx.fillText(row.exitReason.slice(0, 15), pad + 320, currentY + 23);
+
+      // PnL in SOL
+      ctx.font = 'bold 15px "JetBrainsMono", monospace';
+      ctx.fillStyle = rowAccent;
+      ctx.fillText(`${fmtSol(row.pnlSol)} SOL`, pad + 520, currentY + 26);
+
+      // Return % Badge (Pill)
+      const pillText = fmtPct(row.pnlPercent);
+      ctx.font = 'bold 14px "JetBrainsMono", monospace';
+      const pW = ctx.measureText(pillText).width + 24;
+      const pX = pad + headerW - 32 - pW;
+      const pY = currentY + 5;
+
+      roundRect(ctx, pX, pY, pW, 30, 8);
+      ctx.fillStyle = isItemProfit ? PALETTE.profitGreenMuted : PALETTE.lossRedMuted;
+      ctx.fill();
+      ctx.strokeStyle = isItemProfit ? 'rgba(0, 242, 157, 0.35)' : 'rgba(255, 59, 105, 0.35)';
+      ctx.stroke();
+
+      ctx.fillStyle = rowAccent;
+      ctx.fillText(pillText, pX + 12, pY + 20);
+    });
+  }
+
+  // 6. FOOTER BRANDING & TELEMETRY
+  const footerY = H - 72;
+  ctx.font = '600 12px "Inter", "DejaVu Sans", sans-serif';
+  ctx.fillStyle = PALETTE.textMuted;
+  ctx.fillText('CHARON HIGH-FREQUENCY SOLANA TRADING PROTOCOL', pad + 6, footerY + 36);
+
+  ctx.font = '500 12px "JetBrainsMono", monospace';
+  ctx.fillStyle = PALETTE.textGhost;
+  ctx.textAlign = 'right';
+  ctx.fillText('INTEGRATED WITH JUPITER DEX AGGREGATOR', pad + headerW - 6, footerY + 36);
+  ctx.textAlign = 'left';
 
   return canvas.toBuffer('image/png');
 }
-
-export default generateDailyCard;

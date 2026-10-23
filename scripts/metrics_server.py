@@ -8,7 +8,8 @@ DB = "/home/ubuntu/projects/charon/charon.sqlite"
 
 
 def q(sql, params=()):
-    conn = sqlite3.connect(DB)
+    conn = sqlite3.connect('file:'+DB+'?mode=ro', uri=True, timeout=2)
+    conn.execute('PRAGMA query_only=ON')
     conn.row_factory = sqlite3.Row
     rows = [dict(r) for r in conn.execute(sql, params)]
     conn.close()
@@ -23,12 +24,13 @@ def endpoint_pnl_summary():
         r = q("""SELECT 
             COUNT(*) as total, ROUND(AVG(pnl_sol),4) as avg_pnl,
             ROUND(SUM(pnl_sol),4) as total_pnl,
-            SUM(CASE WHEN exit_reason='TRAILING_TP' THEN 1 ELSE 0 END) as wins,
-            SUM(CASE WHEN exit_reason='SL' THEN 1 ELSE 0 END) as losses
-        FROM dry_run_positions WHERE status='closed' AND closed_at_ms > ?""", (cutoff,))
+            SUM(CASE WHEN pnl_sol>0 THEN 1 ELSE 0 END) as wins,
+            SUM(CASE WHEN pnl_sol<0 THEN 1 ELSE 0 END) as losses
+        FROM office_position_quality WHERE id>(SELECT legacy_max_id FROM office_quality_policy WHERE id=1) AND quality_status='quote_backed_assumed_fees' AND execution_mode=COALESCE((SELECT value FROM settings WHERE key='trading_mode'),'dry_run') AND status='closed' AND closed_at_ms > ?""", (cutoff,))
         if r and r[0]["total"]:
             r[0]["period"] = label
-            r[0]["wr"] = round(100 * r[0]["wins"] / max(r[0]["wins"] + r[0]["losses"], 1), 1)
+            r[0]["basis"] = "quote_backed_assumed_fees"
+            r[0]["wr"] = round(100 * r[0]["wins"] / max(r[0]["total"], 1), 1)
             results.append(r[0])
     return results
 
@@ -37,7 +39,7 @@ def endpoint_pnl_timeline():
     return q("""SELECT 
         datetime(closed_at_ms/1000,'unixepoch') as time,
         ROUND(pnl_sol,4) as pnl_sol, exit_reason
-    FROM dry_run_positions WHERE status='closed' 
+    FROM office_position_quality WHERE id>(SELECT legacy_max_id FROM office_quality_policy WHERE id=1) AND quality_status='quote_backed_assumed_fees' AND execution_mode=COALESCE((SELECT value FROM settings WHERE key='trading_mode'),'dry_run') AND status='closed' 
     AND closed_at_ms > (strftime('%s','now')-604800)*1000
     ORDER BY closed_at_ms ASC""")
 
@@ -46,7 +48,7 @@ def endpoint_routes():
     return q("""SELECT 
         json_extract(snapshot_json,'$.candidate.signals.route') as route,
         COUNT(*) as trades, ROUND(SUM(pnl_sol),4) as total_pnl
-    FROM dry_run_positions WHERE status='closed'
+    FROM office_position_quality WHERE id>(SELECT legacy_max_id FROM office_quality_policy WHERE id=1) AND quality_status='quote_backed_assumed_fees' AND execution_mode=COALESCE((SELECT value FROM settings WHERE key='trading_mode'),'dry_run') AND status='closed'
     AND closed_at_ms > (strftime('%s','now')-604800)*1000
     GROUP BY route ORDER BY total_pnl ASC""")
 
@@ -55,7 +57,7 @@ def endpoint_recent_trades():
     return q("""SELECT symbol, ROUND(pnl_sol,4) as pnl_sol, 
         ROUND(pnl_percent,1) as pnl_pct, exit_reason,
         datetime(closed_at_ms/1000,'unixepoch') as closed_at
-    FROM dry_run_positions WHERE status='closed'
+    FROM office_position_quality WHERE id>(SELECT legacy_max_id FROM office_quality_policy WHERE id=1) AND quality_status='quote_backed_assumed_fees' AND execution_mode=COALESCE((SELECT value FROM settings WHERE key='trading_mode'),'dry_run') AND status='closed'
     ORDER BY closed_at_ms DESC LIMIT 20""")
 
 

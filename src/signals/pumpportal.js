@@ -1,6 +1,9 @@
+import { officeBroker, startOfficeBroker } from './officeBroker.js';
+import { publishOfficeDiscovery } from './officeFeed.js';
 import WebSocket from 'ws';
 import { PUMPPORTAL_API_KEY, PUMPPORTAL_ENABLED } from '../config.js';
 import { now, sleep } from '../utils.js';
+import { singleFlight } from '../utils/singleFlight.js';
 import { fetchGmgnTokenInfo } from '../enrichment/gmgn.js';
 import { storeSignalEvent } from './trending.js';
 import { sendTelegram } from '../telegram/send.js';
@@ -51,10 +54,12 @@ function scheduleReconnect() {
   }, reconnectDelay);
 }
 
+const bondingCurveCycle = singleFlight(checkBondingCurve);
+
 function startMonitor() {
   if (monitorTimer) return;
   monitorTimer = setInterval(() => {
-    checkBondingCurve().catch(err => console.log(`[pumpportal] monitor error: ${err.message}`));
+    bondingCurveCycle().catch(err => console.log(`[pumpportal] monitor error: ${err.message}`));
   }, MONITOR_INTERVAL_MS);
 }
 
@@ -284,6 +289,8 @@ function onMessage(raw) {
   let payload;
   try {
     payload = JSON.parse(raw);
+    publishOfficeDiscovery(payload);
+    officeBroker.publish(payload);
   } catch {
     return;
   }
@@ -294,7 +301,7 @@ function onMessage(raw) {
   }
 
   // DEBUG: log all non-create messages to diagnose migration delivery
-  if (payload?.txType && payload.txType !== 'create') {
+  if (payload?.txType && !['create','buy','sell'].includes(payload.txType)) {
     console.log(`[pumpportal] DEBUG txType=${payload.txType} mint=${payload.mint || '?'} keys=${Object.keys(payload).join(',')}`);
   }
 
@@ -370,6 +377,7 @@ function onOpen() {
   ws.send(JSON.stringify({ method: 'subscribeNewToken' }));
   // Also subscribe to migration in case PumpPortal re-enables it
   ws.send(JSON.stringify({ method: 'subscribeMigration' }));
+  officeBroker.attach(ws);
 }
 
 function connect() {
@@ -384,6 +392,7 @@ function connect() {
   });
 
   ws.on('close', (code, reason) => {
+    officeBroker.disconnect();
     console.log(`[pumpportal] disconnected (code=${code})`);
     if (lastDisconnectAt === null) {
       lastDisconnectAt = now();
@@ -407,12 +416,14 @@ export function startPumpportal() {
     return;
   }
   stopped = false;
+  startOfficeBroker();
   startMonitor();
   startHealthMonitor();
   connect();
 }
 
 export function stopPumpportal() {
+  officeBroker.disconnect();
   stopped = true;
   if (reconnectTimer) {
     clearTimeout(reconnectTimer);

@@ -1,0 +1,396 @@
+======================================================================
+CHARON SHADOW-LIVE AUDIT v2 — 2026-08-03
+Read-only json_extract-based analysis
+======================================================================
+
+[0] VERIFIKASI MENTAH DATABASE
+--------------------------------------------------
+Size: 10383.9 MB
+Counts by execution_mode × status:
+  dry_run/closed: 6941
+  live/closed: 206
+Live closed: 2026-07-31T10:46:48.073Z → 2026-08-01T02:40:00.706Z
+Dry closed: 2026-06-04T15:08:01.905Z → 2026-08-03T20:17:29.025Z
+  buy: 7158
+  sell: 6913
+
+Buy fee rows extracted: 198
+Sell fee rows extracted: 192
+
+[0b] 5 ROW MENTAH:
+  id=6035 size=0.01 SOL | route=pumpfun_pregrad | pnl=-4535.43% | exit=SL
+    buy sig=5000 prio=298579 rent=4078560 routerBps=10 platBps=10
+    sell sig=5000 prio=299237 rent=0 routerBps=10 platBps=10
+  id=6097 size=0.0125 SOL | route=pumpportal_graduated | pnl=-2238.98% | exit=SL
+    buy sig=5000 prio=4727 rent=2039280 routerBps=10 platBps=10
+    sell sig=5000 prio=48464 rent=0 routerBps=10 platBps=10
+  id=6093 size=0.0125 SOL | route=pumpportal_graduated | pnl=-2176.68% | exit=SL
+    buy sig=5000 prio=81524 rent=2039280 routerBps=10 platBps=10
+    sell sig=5000 prio=87503 rent=2039280 routerBps=10 platBps=10
+  id=6119 size=0.0125 SOL | route=graduated_trending | pnl=-3219.03% | exit=SL
+    buy sig=5000 prio=168903 rent=4078560 routerBps=10 platBps=10
+    sell sig=5000 prio=303239 rent=0 routerBps=10 platBps=10
+  id=6100 size=0.0125 SOL | route=pumpportal_graduated | pnl=-3487.01% | exit=SL
+    buy sig=5000 prio=69398 rent=2039280 routerBps=10 platBps=10
+    sell sig=5000 prio=88700 rent=0 routerBps=10 platBps=10
+
+
+[2] DISTRIBUSI FEE LIVE DARI PAYLOAD
+--------------------------------------------------
+
+Matched buy+sell fee positions: 192
+
+ENTRY FEES (192):
+  signatureFee: mean=5000 lamports / 0.000005 SOL
+  prioritizationFee: mean=206246 lamports / 0.000206 SOL med=91889 lamports / 0.000092 SOL p90=523354 lamports / 0.000523 SOL max=1593197 lamports / 0.001593 SOL
+  swapFee (bps est): mean=25026 lamports / 0.000025 SOL
+  BUY TOTAL: mean=3348299 lamports / 0.003348 SOL median=4122165 lamports / 0.004122 SOL p90=4556784 lamports / 0.004557 SOL
+
+EXIT FEES (192):
+  prioritizationFee: mean=176304 lamports / 0.000176 SOL med=117589 lamports / 0.000118 SOL p90=388373 lamports / 0.000388 SOL max=1051467 lamports / 0.001051 SOL
+  swapFee (bps est): mean=25026 lamports / 0.000025 SOL
+  SELL TOTAL: mean=227572 lamports / 0.000228 SOL median=149768 lamports / 0.000150 SOL p90=425941 lamports / 0.000426 SOL
+
+ROUND-TRIP FEES:
+  mean=3575871 lamports / 0.003576 SOL median=4207934 lamports / 0.004208 SOL
+  p90=4922128 lamports / 0.004922 SOL total=686567173 lamports / 0.686567 SOL
+  min=2104607 lamports / 0.002105 SOL max=6012708 lamports / 0.006013 SOL
+
+RT fee as % of position size:
+  mean=28.76% median=31.25% p90=41.69%
+
+Fixed fees (sig+prio+rent): mean=3525819 lamports / 0.003526 SOL med=4157934 lamports / 0.004158 SOL
+Bps swap fees (est): mean=50052 lamports / 0.000050 SOL med=50000 lamports / 0.000050 SOL
+
+
+[4] ROUTE SEPARATION
+--------------------------------------------------
+
+Found 6 distinct routes:
+
+  pumpportal_graduated: 85 trades, WR=47.1%
+    Gross PnL: -0.065774 SOL total, avg=-0.000774 SOL/trade
+    Median RT fee: 2220551 lamports / 0.002221 SOL (17.89% of avg size)
+    Fee-adjusted NET: -0.264068 SOL, WR_net=30.6%
+    Wins=40 Losses=45
+
+  dual_source: 63 trades, WR=41.3%
+    Gross PnL: -0.016289 SOL total, avg=-0.000259 SOL/trade
+    Median RT fee: 4597932 lamports / 0.004598 SOL (36.10% of avg size)
+    Fee-adjusted NET: -0.308741 SOL, WR_net=6.3%
+    Wins=26 Losses=37
+
+  graduated_trending: 16 trades, WR=62.5%
+    Gross PnL: 0.010548 SOL total, avg=0.000659 SOL/trade
+    Median RT fee: 4233657 lamports / 0.004234 SOL (34.74% of avg size)
+    Fee-adjusted NET: -0.057661 SOL, WR_net=6.3%
+    Wins=10 Losses=6
+
+  trending: 13 trades, WR=46.2%
+    Gross PnL: -0.010553 SOL total, avg=-0.000812 SOL/trade
+    Median RT fee: 4579643 lamports / 0.004580 SOL (35.02% of avg size)
+    Fee-adjusted NET: -0.069681 SOL, WR_net=15.4%
+    Wins=6 Losses=7
+
+  pumpfun_pregrad: 12 trades, WR=50.0%
+    Gross PnL: 0.010822 SOL total, avg=0.000902 SOL/trade
+    Median RT fee: 4478485 lamports / 0.004478 SOL (37.71% of avg size)
+    Fee-adjusted NET: -0.042845 SOL, WR_net=25.0%
+    Wins=6 Losses=6
+
+  fee_trending: 3 trades, WR=0.0%
+    Gross PnL: -0.008858 SOL total, avg=-0.002953 SOL/trade
+    Median RT fee: 4689564 lamports / 0.004690 SOL (37.52% of avg size)
+    Fee-adjusted NET: -0.023676 SOL, WR_net=0.0%
+    Wins=0 Losses=3
+
+
+[3] SHADOW-LIVE DRY-RUN PnL DENGAN SKENARIO FEE
+--------------------------------------------------
+Dry-run closed positions with route: 6710
+
+--- LIVE SELL SLIPPAGE ANALYSIS ---
+Trades with valid routePlan: 192
+Slippage (expected - executed / expected): mean=0.229% median=0.100% p90=0.100%
+Positive = executed < expected (loss to trader)
+
+--- Scenario: Live mean fees ---
+  Trades: 6710
+  Gross PnL: 49.4210 SOL
+  Fee cost: 23.9941 SOL (0.003576/trade)
+  Slippage cost (est median 0.10%): 0.2123 SOL
+  NET after costs: 25.2146 SOL
+  WR after costs: 43.7%
+  Avg net/trade: 0.003758 SOL
+  Per-route (top 12):
+    pumpportal_graduated: 3630 trades | gross=50.7148 | net=37.5798 SOL | WR=57.3%
+    dual_source: 1377 trades | gross=-0.7809 | net=-5.7253 SOL | WR=27.5%
+    graduated_trending: 653 trades | gross=-5.1298 | net=-7.4736 SOL | WR=30.6%
+    trending: 543 trades | gross=-1.3811 | net=-3.3271 SOL | WR=21.2%
+    trenches_completed: 196 trades | gross=4.8000 | net=4.0837 SOL | WR=35.7%
+    pumpfun_pregrad: 159 trades | gross=-0.5704 | net=-1.1412 SOL | WR=32.7%
+    fee_trending: 117 trades | gross=2.4645 | net=2.0400 SOL | WR=24.8%
+    fee_graduated_trending: 35 trades | gross=-0.6963 | net=-0.8216 SOL | WR=20.0%
+
+--- Scenario: Live median fees ---
+  Trades: 6710
+  Gross PnL: 49.4210 SOL
+  Fee cost: 28.6647 SOL (0.004272/trade)
+  Slippage cost (est median 0.10%): 0.2123 SOL
+  NET after costs: 20.5440 SOL
+  WR after costs: 42.7%
+  Avg net/trade: 0.003062 SOL
+  Per-route (top 12):
+    pumpportal_graduated: 3630 trades | gross=50.7148 | net=35.0531 SOL | WR=56.6%
+    dual_source: 1377 trades | gross=-0.7809 | net=-6.6838 SOL | WR=26.6%
+    graduated_trending: 653 trades | gross=-5.1298 | net=-7.9282 SOL | WR=28.5%
+    trending: 543 trades | gross=-1.3811 | net=-3.7051 SOL | WR=19.5%
+    trenches_completed: 196 trades | gross=4.8000 | net=3.9473 SOL | WR=35.7%
+    pumpfun_pregrad: 159 trades | gross=-0.5704 | net=-1.2519 SOL | WR=28.3%
+    fee_trending: 117 trades | gross=2.4645 | net=1.9585 SOL | WR=24.8%
+    fee_graduated_trending: 35 trades | gross=-0.6963 | net=-0.8460 SOL | WR=20.0%
+
+--- Scenario: Live p90 fees ---
+  Trades: 6710
+  Gross PnL: 49.4210 SOL
+  Fee cost: 33.4341 SOL (0.004983/trade)
+  Slippage cost (est median 0.10%): 0.2123 SOL
+  NET after costs: 15.7746 SOL
+  WR after costs: 41.5%
+  Avg net/trade: 0.002351 SOL
+  Per-route (top 12):
+    pumpportal_graduated: 3630 trades | gross=50.7148 | net=32.4730 SOL | WR=55.7%
+    dual_source: 1377 trades | gross=-0.7809 | net=-7.6625 SOL | WR=25.1%
+    graduated_trending: 653 trades | gross=-5.1298 | net=-8.3923 SOL | WR=26.8%
+    trending: 543 trades | gross=-1.3811 | net=-4.0911 SOL | WR=18.0%
+    trenches_completed: 196 trades | gross=4.8000 | net=3.8080 SOL | WR=35.7%
+    pumpfun_pregrad: 159 trades | gross=-0.5704 | net=-1.3649 SOL | WR=25.2%
+    fee_trending: 117 trades | gross=2.4645 | net=1.8754 SOL | WR=24.8%
+    fee_graduated_trending: 35 trades | gross=-0.6963 | net=-0.8709 SOL | WR=14.3%
+
+
+[5] PRIORITY FEE CAP SIMULATION
+--------------------------------------------------
+Base costs (median from live):
+  Buy: sig=5000 lamports / 0.000005 SOL swap=25000 lamports / 0.000025 SOL prio=91889 lamports / 0.000092 SOL
+  Sell: sig=5000 lamports / 0.000005 SOL swap=25000 lamports / 0.000025 SOL prio=117589 lamports / 0.000118 SOL
+
+--- Priority fee cap: entry prio ≤ 1% of position size ---
+  Skipped (entry prio 91889 lamports / 0.000092 SOL > cap 1%): 0/6710 (0.0%)
+  Executed: 6710
+  Gross PnL (all): 49.4210 SOL
+  NET (executed only): 26.7311 SOL
+  WR after costs: 43.9%
+  Per-route (executed, top 8):
+    pumpportal_graduated: 3630 trades | net=38.4400 SOL | WR=57.6%
+    dual_source: 1377 trades | net=-5.4372 SOL | WR=27.7%
+    graduated_trending: 653 trades | net=-7.3379 SOL | WR=30.8%
+    trending: 543 trades | net=-3.2172 SOL | WR=21.2%
+    trenches_completed: 196 trades | net=4.1372 SOL | WR=36.2%
+    pumpfun_pregrad: 159 trades | net=-1.1080 SOL | WR=33.3%
+    fee_trending: 117 trades | net=2.0689 SOL | WR=24.8%
+    fee_graduated_trending: 35 trades | net=-0.8146 SOL | WR=20.0%
+
+--- Priority fee cap: entry prio ≤ 2% of position size ---
+  Skipped (entry prio 91889 lamports / 0.000092 SOL > cap 2%): 0/6710 (0.0%)
+  Executed: 6710
+  Gross PnL (all): 49.4210 SOL
+  NET (executed only): 26.7311 SOL
+  WR after costs: 43.9%
+  Per-route (executed, top 8):
+    pumpportal_graduated: 3630 trades | net=38.4400 SOL | WR=57.6%
+    dual_source: 1377 trades | net=-5.4372 SOL | WR=27.7%
+    graduated_trending: 653 trades | net=-7.3379 SOL | WR=30.8%
+    trending: 543 trades | net=-3.2172 SOL | WR=21.2%
+    trenches_completed: 196 trades | net=4.1372 SOL | WR=36.2%
+    pumpfun_pregrad: 159 trades | net=-1.1080 SOL | WR=33.3%
+    fee_trending: 117 trades | net=2.0689 SOL | WR=24.8%
+    fee_graduated_trending: 35 trades | net=-0.8146 SOL | WR=20.0%
+
+--- Priority fee cap: entry prio ≤ 5% of position size ---
+  Skipped (entry prio 91889 lamports / 0.000092 SOL > cap 5%): 0/6710 (0.0%)
+  Executed: 6710
+  Gross PnL (all): 49.4210 SOL
+  NET (executed only): 26.7311 SOL
+  WR after costs: 43.9%
+  Per-route (executed, top 8):
+    pumpportal_graduated: 3630 trades | net=38.4400 SOL | WR=57.6%
+    dual_source: 1377 trades | net=-5.4372 SOL | WR=27.7%
+    graduated_trending: 653 trades | net=-7.3379 SOL | WR=30.8%
+    trending: 543 trades | net=-3.2172 SOL | WR=21.2%
+    trenches_completed: 196 trades | net=4.1372 SOL | WR=36.2%
+    pumpfun_pregrad: 159 trades | net=-1.1080 SOL | WR=33.3%
+    fee_trending: 117 trades | net=2.0689 SOL | WR=24.8%
+    fee_graduated_trending: 35 trades | net=-0.8146 SOL | WR=20.0%
+
+--- Priority fee cap: entry prio ≤ 10% of position size ---
+  Skipped (entry prio 91889 lamports / 0.000092 SOL > cap 10%): 0/6710 (0.0%)
+  Executed: 6710
+  Gross PnL (all): 49.4210 SOL
+  NET (executed only): 26.7311 SOL
+  WR after costs: 43.9%
+  Per-route (executed, top 8):
+    pumpportal_graduated: 3630 trades | net=38.4400 SOL | WR=57.6%
+    dual_source: 1377 trades | net=-5.4372 SOL | WR=27.7%
+    graduated_trending: 653 trades | net=-7.3379 SOL | WR=30.8%
+    trending: 543 trades | net=-3.2172 SOL | WR=21.2%
+    trenches_completed: 196 trades | net=4.1372 SOL | WR=36.2%
+    pumpfun_pregrad: 159 trades | net=-1.1080 SOL | WR=33.3%
+    fee_trending: 117 trades | net=2.0689 SOL | WR=24.8%
+    fee_graduated_trending: 35 trades | net=-0.8146 SOL | WR=20.0%
+
+
+[6] EXIT SWEEP — BOUNDED COUNTERFACTUAL
+--------------------------------------------------
+CATATAN: Bukan tick-level replay. Hanya recorded high_water_mcap + exit outcomes.
+
+Exit reason breakdown — Dry-run:
+  TRAILING_TP: 3249 (48.4%)
+  SL: 2442 (36.4%)
+  MAX_HOLD: 935 (13.9%)
+  MANUAL: 81 (1.2%)
+  PRE_LIVE_CLEANUP: 2 (0.0%)
+  TP: 1 (0.0%)
+
+Exit reason breakdown — Live:
+  SL: 94 | avg pnl=-31.4%
+  TRAILING_TP: 59 | avg pnl=21.3%
+  MANUAL: 35 | avg pnl=31.0%
+  MAX_HOLD: 4 | avg pnl=5.4%
+
+--- SL Sweep on dry-run positions ---
+Methodology: For positions with exit_reason=SL, replace PnL with new SL level.
+NOTES: This assumes position would have hit the new SL at same timing —
+wider SL could have allowed recovery. This is optimistic for wider SL.
+
+  SL=-10%: Total=159.7912 SOL | SL trades=2442/6710 | WR=49.8% | Avg=0.023814 SOL/trade
+  SL=-15%: Total=142.5041 SOL | SL trades=2442/6710 | WR=49.8% | Avg=0.021238 SOL/trade
+  SL=-20%: Total=125.2169 SOL | SL trades=2442/6710 | WR=49.8% | Avg=0.018661 SOL/trade
+  SL=-25%: Total=107.9298 SOL | SL trades=2442/6710 | WR=49.8% | Avg=0.016085 SOL/trade
+  SL=-30%: Total=90.6427 SOL | SL trades=2442/6710 | WR=49.8% | Avg=0.013509 SOL/trade
+  SL=-35%: Total=73.3556 SOL | SL trades=2442/6710 | WR=49.8% | Avg=0.010932 SOL/trade
+
+--- Peak Return vs Actual Exit Return ---
+Positions with valid HWM: 192
+  Peak return: mean=32.6% median=19.6% p90=83.5%
+  Actual return: mean=-3.1%
+  Gap (peak-actual): mean=35.7% median=27.7%
+  → median 27.7% of potential profit not captured.
+  Trailing stop optimization could help, but precise simulation requires tick-level data.
+
+
+[7] BREAK-EVEN MATH
+--------------------------------------------------
+Dry-run winners: 3340 (49.8%) | avg return: 45.9%
+Dry-run losers: 3370 (50.2%) | avg return: -34.3%
+
+Break-even required WR (using avg winner/loser returns):
+
+  Position: 0.01 SOL
+    median RT (4207934 lamports / 0.004208 SOL, 42.1% of pos): BE WR = 95.3%
+    mean RT (3575871 lamports / 0.003576 SOL, 35.8% of pos): BE WR = 87.4%
+    p90 RT (4922128 lamports / 0.004922 SOL, 49.2% of pos): BE WR = 104.2%
+
+  Position: 0.025 SOL
+    median RT (4207934 lamports / 0.004208 SOL, 16.8% of pos): BE WR = 63.8%
+    mean RT (3575871 lamports / 0.003576 SOL, 14.3% of pos): BE WR = 60.6%
+    p90 RT (4922128 lamports / 0.004922 SOL, 19.7% of pos): BE WR = 67.3%
+
+  Position: 0.05 SOL
+    median RT (4207934 lamports / 0.004208 SOL, 8.4% of pos): BE WR = 53.3%
+    mean RT (3575871 lamports / 0.003576 SOL, 7.2% of pos): BE WR = 51.7%
+    p90 RT (4922128 lamports / 0.004922 SOL, 9.8% of pos): BE WR = 55.1%
+
+  Position: 0.1 SOL
+    median RT (4207934 lamports / 0.004208 SOL, 4.2% of pos): BE WR = 48.0%
+    mean RT (3575871 lamports / 0.003576 SOL, 3.6% of pos): BE WR = 47.2%
+    p90 RT (4922128 lamports / 0.004922 SOL, 4.9% of pos): BE WR = 48.9%
+
+Expected value per trade (gross EV - fee):
+  size=0.01 SOL, median RT: EV/net = 0.007365 → 0.003157 SOL (PROFITABLE)
+  size=0.01 SOL, mean RT: EV/net = 0.007365 → 0.003789 SOL (PROFITABLE)
+  size=0.01 SOL, p90 RT: EV/net = 0.007365 → 0.002443 SOL (PROFITABLE)
+  size=0.025 SOL, median RT: EV/net = 0.007365 → 0.003157 SOL (PROFITABLE)
+  size=0.025 SOL, mean RT: EV/net = 0.007365 → 0.003789 SOL (PROFITABLE)
+  size=0.025 SOL, p90 RT: EV/net = 0.007365 → 0.002443 SOL (PROFITABLE)
+  size=0.05 SOL, median RT: EV/net = 0.007365 → 0.003157 SOL (PROFITABLE)
+  size=0.05 SOL, mean RT: EV/net = 0.007365 → 0.003789 SOL (PROFITABLE)
+  size=0.05 SOL, p90 RT: EV/net = 0.007365 → 0.002443 SOL (PROFITABLE)
+  size=0.1 SOL, median RT: EV/net = 0.007365 → 0.003157 SOL (PROFITABLE)
+  size=0.1 SOL, mean RT: EV/net = 0.007365 → 0.003789 SOL (PROFITABLE)
+  size=0.1 SOL, p90 RT: EV/net = 0.007365 → 0.002443 SOL (PROFITABLE)
+
+
+[8] EXACT FEE SOURCE PATHS
+--------------------------------------------------
+Buy payload (pos #6029):
+  signatureFeeLamports: $.swap.order.signatureFeeLamports = 5000
+  prioritizationFeeLamports: $.swap.order.prioritizationFeeLamports = 636817
+  rentFeeLamports: $.swap.order.rentFeeLamports = 2039280
+  feeBps: $.swap.order.feeBps = 10
+  platformFee.feeBps: $.swap.order.platformFee.feeBps = 10
+  router: metis
+Sell payload (pos #6029):
+  signatureFeeLamports: $.sell.order.signatureFeeLamports = 5000
+  prioritizationFeeLamports: $.sell.order.prioritizationFeeLamports = 236858
+  rentFeeLamports: $.sell.order.rentFeeLamports = 0
+  feeBps: $.sell.order.feeBps = 10
+  platformFee.feeBps: $.sell.order.platformFee.feeBps = 10
+  router: metis
+
+Fee extraction summary:
+  - All fields extracted via SQLite json_extract from dry_run_trades.payload_json
+  - Buy path: $.swap.order.{signatureFeeLamports,prioritizationFeeLamports,rentFeeLamports,feeBps,platformFee.feeBps}
+  - Sell path: $.sell.order.{signatureFeeLamports,prioritizationFeeLamports,rentFeeLamports,feeBps,platformFee.feeBps}
+  - Fixed fee = sum of lamports / 1e9
+  - Swap fee = position_size_sol * (feeBps + platformFeeBps) / 10000
+
+
+[9] TESIS & REKOMENDASI
+======================================================================
+
+RINGKASAN DATA:
+  - 192 live trades dengan fee payload (31 Jul – 1 Aug 2026)
+  - 6710 dry-run trades (4 Jun – 3 Aug 2026)
+
+BIAYA TRANSAKSI (LIVE, 192 trades):
+  - Round-trip median: 4207934 lamports / 0.004208 SOL | mean: 3575871 lamports / 0.003576 SOL | p90: 4922128 lamports / 0.004922 SOL
+  - Buy prio median: 91889 lamports / 0.000092 SOL | Sell prio median: 117589 lamports / 0.000118 SOL
+  - Fee sebagai % posisi (median): 31.25%
+  - Total fee paid: 686567173 lamports / 0.686567 SOL
+
+PERFORMA LIVE GROSS:
+  - Total PnL gross: -0.080104 SOL
+  - WR gross: 45.8%
+  - Total PnL after fees: -0.766671 SOL
+  - WR after fees: 18.8%
+
+GAP PEAK-vs-ACTUAL:
+  - Median peak return: 19.6%
+  - Median actual return: -3.3%
+  - Gap median: 27.7%
+
+TESIS:
+Berdasarkan audit shadow-live dari 192 live trades dengan fee payload aktual
+dan 6710 dry-run trades:
+
+1. Biaya round-trip median 4207934 lamports / 0.004208 SOL (31.2% posisi 0.01-0.025 SOL) —
+   artinya setiap trade butuh minimal 31.2% return hanya untuk break-even.
+   Saat avg loss 34.3% per loser, WR harus di atas
+   ~95% agar net profitable (dengan asumsi avg winner 45.9%).
+
+2. Komponen fee terbesar adalah prioritization fee (buy: 91889 lamports / 0.000092 SOL median, 523354 lamports / 0.000523 SOL p90).
+   Dengan cap 2% posisi, sedikit trade yang kena skip.
+
+3. 27.7% median gap antara peak return dan actual exit — trailing stop
+   optimization bisa menangkap sebagian gap ini, TAPI simulasi presisi tidak mungkin
+   tanpa data tick-level. Data DB hanya menyimpan 1 HWM per posisi.
+
+REKOMENDASI:
+a) Implementasikan priority fee cap di router: maksimum 5% dari position size untuk entry.
+   Live data menunjukkan p90 prio = 523354 lamports / 0.000523 SOL. Pada posisi 0.025 SOL, 
+   5% = 1250000 lamports / 0.001250 SOL — di atas p90, jadi skip rate rendah.
+b) Jangan mengubah strategi exit tanpa data tick-level. Current SL/Trailing sudah
+   menangkap 59 trailing-TP dari 192 live trades.
+c) Audit weekly dengan live data aktual, bukan backtest. Biaya real-time
+   bervariasi signifikan (range RT fee: 2104607 lamports / 0.002105 SOL – 6012708 lamports / 0.006013 SOL).

@@ -21,10 +21,18 @@ async function paceGmgnRequest() {
   lastGmgnRequestAt = now();
 }
 
-function enqueueGmgn(work) {
-  const run = gmgnQueue.then(work, work);
+function enqueueGmgn(work, deadlineMs) {
+  const expiresAt = now() + deadlineMs;
+  let timer;
+  const expired = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error('gmgn queue deadline exceeded')), deadlineMs);
+  });
+  const run = gmgnQueue.then(() => {
+    if (now() >= expiresAt) throw new Error('gmgn queue deadline exceeded');
+    return work(expiresAt);
+  });
   gmgnQueue = run.catch(() => {});
-  return run;
+  return Promise.race([run, expired]).finally(() => clearTimeout(timer));
 }
 
 function gmgnErrorText(status, payload, fallback) {
@@ -48,14 +56,15 @@ function appendParams(url, params = {}) {
   }
 }
 
-async function gmgnFetch(pathname, { method = 'GET', params = {}, body = null } = {}) {
+async function gmgnFetch(pathname, { method = 'GET', params = {}, body = null, deadlineMs = 15_000 } = {}) {
   if (!GMGN_ENABLED) throw new Error('GMGN disabled');
-  return enqueueGmgn(async () => {
+  return enqueueGmgn(async (expiresAt) => {
     const url = new URL(`https://openapi.gmgn.ai${pathname}`);
     appendParams(url, params);
     const maxRetries = Math.max(0, Math.floor(numSetting('gmgn_max_retries', 2)));
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       await paceGmgnRequest();
+      if (now() >= expiresAt) throw new Error('gmgn queue deadline exceeded');
       url.searchParams.set('timestamp', String(Math.floor(now() / 1000)));
       url.searchParams.set('client_id', randomUUID());
       const fetchOpts = {
@@ -68,11 +77,12 @@ async function gmgnFetch(pathname, { method = 'GET', params = {}, body = null } 
       };
       if (body) fetchOpts.body = JSON.stringify(body);
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 8000);
+      const timeoutId = setTimeout(() => controller.abort(), Math.max(1, Math.min(8000, expiresAt - now())));
       fetchOpts.signal = controller.signal;
-      let res;
+      let res, text;
       try {
         res = await fetch(url, fetchOpts);
+        text = await res.text();
       } catch (err) {
         if (err?.name === 'AbortError') {
           throw new Error('gmgn fetch timeout 8000ms');
@@ -81,7 +91,7 @@ async function gmgnFetch(pathname, { method = 'GET', params = {}, body = null } 
       } finally {
         clearTimeout(timeoutId);
       }
-      const text = await res.text().catch(() => '');
+
       let payload = {};
       try {
         payload = text ? JSON.parse(text) : {};
@@ -92,13 +102,15 @@ async function gmgnFetch(pathname, { method = 'GET', params = {}, body = null } 
       const message = gmgnErrorText(res.status, payload, `GMGN ${pathname} ${res.status}`);
       const rateLimited = res.status === 429 || /rate limit|temporarily banned/i.test(String(message));
       if (rateLimited && attempt < maxRetries) {
-        const retryAfter = Number(res.headers.get('retry-after'));
+        const rawRetryAfter = res.headers.get('retry-after');
+        const retryAfter = rawRetryAfter === null ? NaN : Number(rawRetryAfter);
         const backoffMs = Number.isFinite(retryAfter)
           ? retryAfter * 1000
           : /temporarily banned/i.test(String(message))
             ? 60_000
             : Math.min(30_000, 3000 * 2 ** attempt);
-        await sleep(backoffMs);
+        if (now() + backoffMs >= expiresAt) throw new Error('gmgn retry deadline exceeded');
+        await sleep(Math.min(30_000, Math.max(0, backoffMs)));
         continue;
       }
       const error = new Error(message);
@@ -106,7 +118,7 @@ async function gmgnFetch(pathname, { method = 'GET', params = {}, body = null } 
       throw error;
     }
     throw new Error(`GMGN ${pathname} failed`);
-  });
+  }, deadlineMs);
 }
 
 function gmgnBackoffKey(kind) {

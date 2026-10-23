@@ -1,9 +1,9 @@
 import { now, json } from '../utils.js';
 import { numSetting, boolSetting } from '../db/settings.js';
 import { db } from '../db/connection.js';
-import { WSOL_MINT, LIVE_MIN_SOL_RESERVE_LAMPORTS } from '../config.js';
+import { WSOL_MINT, LIVE_MIN_SOL_RESERVE_LAMPORTS, ENTRY_FRESHNESS_GATE_PCT, ENTRY_FRESHNESS_GATE_SHADOW } from '../config.js';
 import { escapeHtml, fmtSol } from '../format.js';
-import { executeJupiterSwap, liveWalletBalanceLamports, fetchLiveTokenBalance } from '../liveExecutor.js';
+import { executeJupiterSwap, liveWalletBalanceLamports, fetchLiveTokenBalance, closeEmptyTokenAccounts } from '../liveExecutor.js';
 import { activeStrategy } from '../db/settings.js';
 import { createLivePosition, canOpenMorePositions, openPositionCount } from '../db/positions.js';
 import { intentById } from '../db/intents.js';
@@ -17,6 +17,36 @@ import { createTradeIntent } from '../db/intents.js';
 
 const ENTRY_MAX_ATTEMPTS = 3;
 
+// Freshness gate: bandingkan harga sinyal (candidate.metrics.priceUsd) dengan harga fill dari
+// quote Jupiter (order.inUsdValue / (order.outAmount / 10^decimals)). Kalau drift > ENTRY_FRESHNESS_GATE_PCT%
+// BUY dibatalkan SEBELUM sign/broadcast (return early, alasan 'stale_signal'), route TIDAK di-disable.
+// Return null kalau gate nonaktif atau data tidak cukup (fail-open: jangan blokir trade tanpa data).
+function entryFreshnessGuard(candidate) {
+  const threshold = Number(ENTRY_FRESHNESS_GATE_PCT);
+  if (!Number.isFinite(threshold) || threshold <= 0) return null; // gate nonaktif
+  const signalPrice = Number(candidate?.metrics?.priceUsd);
+  if (!Number.isFinite(signalPrice) || signalPrice <= 0) return null; // tak ada harga sinyal
+  const decimals = Number(candidate?.jupiterAsset?.decimals ?? 9);
+  return (order) => {
+    const inUsd = Number(order?.inUsdValue);
+    const outRaw = Number(order?.outAmount);
+    if (!Number.isFinite(inUsd) || inUsd <= 0 || !Number.isFinite(outRaw) || outRaw <= 0) return null;
+    const tokensOut = outRaw / (10 ** decimals);
+    if (!(tokensOut > 0)) return null;
+    const fillPrice = inUsd / tokensOut;
+    const driftPct = (fillPrice / signalPrice - 1) * 100;
+    if (driftPct > threshold) {
+      const reason = `stale_signal: drift ${driftPct.toFixed(2)}% > gate ${threshold}% (signal $${signalPrice} -> fill $${fillPrice})`;
+      if (ENTRY_FRESHNESS_GATE_SHADOW) {
+        console.log(`[freshness-gate][shadow] ${candidate?.token?.mint?.slice(0, 8)}... ${reason}`);
+        return null; // shadow: catat saja, jangan blokir
+      }
+      return reason;
+    }
+    return null;
+  };
+}
+
 export async function executeLiveBuy(selectedRow, decision, batchId, rows = [], triggerCandidateId = null) {
   const strat = activeStrategy();
   const amountLamports = Math.floor((strat.position_size_sol ?? numSetting('dry_run_buy_sol', 0.1)) * 1_000_000_000);
@@ -25,14 +55,33 @@ export async function executeLiveBuy(selectedRow, decision, batchId, rows = [], 
     throw new Error(`Insufficient SOL balance. Need ${fmtSol((amountLamports + LIVE_MIN_SOL_RESERVE_LAMPORTS) / 1_000_000_000)} SOL including reserve.`);
   }
   const candidate = selectedRow.candidate;
+
+  // C2 FIX: Dedup BEFORE swap — prevent double-spend if same mint already has open position
+  const existingOpen = db.prepare(
+    'SELECT id FROM dry_run_positions WHERE mint = ? AND status = ? LIMIT 1'
+  ).get(candidate.token.mint, 'open');
+  if (existingOpen) {
+    const err = new Error(`Duplicate entry blocked: ${candidate.token.symbol || candidate.token.mint.slice(0, 8)} already has open position #${existingOpen.id}`);
+    console.log(`[executeLiveBuy] ${err.message}`);
+    logDecisionEvent({
+      batchId, triggerCandidateId, selectedRow, rows, decision,
+      mode: 'live', action: 'live_entry_blocked_duplicate',
+      guardrails: { existingPositionId: existingOpen.id },
+      execution: { error: err.message },
+    });
+    throw err;
+  }
+
   let swap = null;
   let lastError = null;
+  let staleSignal = null;
   for (let attempt = 1; attempt <= ENTRY_MAX_ATTEMPTS; attempt++) {
     try {
       swap = await executeJupiterSwap({
         inputMint: WSOL_MINT,
         outputMint: candidate.token.mint,
         amount: amountLamports,
+        guard: entryFreshnessGuard(candidate),
       });
       if (!swap.outputAmount) {
         swap.outputAmount = await fetchLiveTokenBalance(candidate.token.mint) || swap.outputAmount;
@@ -40,12 +89,42 @@ export async function executeLiveBuy(selectedRow, decision, batchId, rows = [], 
       lastError = null;
       break;
     } catch (err) {
+      if (err.code === 'STALE_SIGNAL_GUARD') {
+        staleSignal = err; // harga sinyal basi — jangan retry, harga akan makin jauh
+        break;
+      }
       lastError = err;
       console.log(`[executeLiveBuy] attempt ${attempt}/${ENTRY_MAX_ATTEMPTS} failed for ${candidate.token.mint.slice(0, 8)}... ${err.message}`);
       if (attempt < ENTRY_MAX_ATTEMPTS) {
         await new Promise(r => setTimeout(r, 1500 * attempt));
       }
     }
+  }
+  if (!swap && staleSignal) {
+    // Freshness gate: skip trade. Tidak ada posisi dibuat, tidak ada dana terpakai,
+    // route tetap aktif untuk token berikutnya.
+    const msg = staleSignal.message;
+    console.log(`[executeLiveBuy] SKIP ${candidate.token.mint.slice(0, 8)}... ${msg}`);
+    updateCandidateStatus(selectedRow.id, 'stale_signal');
+    logDecisionEvent({
+      batchId,
+      triggerCandidateId,
+      selectedRow,
+      rows,
+      decision,
+      mode: 'live',
+      action: 'live_entry_skipped_stale_signal',
+      guardrails: { freshnessGatePct: ENTRY_FRESHNESS_GATE_PCT, signalPriceUsd: Number(candidate?.metrics?.priceUsd) },
+      execution: { reason: 'stale_signal', detail: msg },
+    });
+    await sendTelegram([
+      '⏭️ <b>Live entry skipped (stale signal)</b>',
+      '',
+      candidateSummary(candidate, decision),
+      '',
+      escapeHtml(msg),
+    ].join('\n'));
+    return;
   }
   if (!swap) {
     // Record the failed attempt as a closed position so the failure is auditable.
@@ -59,7 +138,7 @@ export async function executeLiveBuy(selectedRow, decision, batchId, rows = [], 
     db.prepare(`
       INSERT INTO dry_run_trades (position_id, mint, side, at_ms, price, mcap, size_sol, token_amount_est, reason, payload_json)
       VALUES (?, ?, 'buy', ?, ?, ?, ?, ?, 'FAILED_ENTRY', ?)
-    `).run(positionId, candidate.token.mint, now(), null, null, numSetting('dry_run_buy_sol', 0.1), null, 'FAILED_ENTRY',
+    `).run(positionId, candidate.token.mint, now(), null, null, numSetting('dry_run_buy_sol', 0.1), null,
       json({ attempts: ENTRY_MAX_ATTEMPTS, error: lastError?.message || 'unknown' }));
     logDecisionEvent({
       batchId,
@@ -101,11 +180,18 @@ export async function executeLiveBuy(selectedRow, decision, batchId, rows = [], 
 export async function executeLiveSell(position, reason) {
   const amount = position.token_amount_raw || position.token_amount_est;
   if (!amount || Number(amount) <= 0) throw new Error('Live position has no token amount to sell.');
-  return executeJupiterSwap({
+  const sell = await executeJupiterSwap({
     inputMint: position.mint,
     outputMint: WSOL_MINT,
     amount,
   });
+  try {
+    sell.closeAccountSignature = await closeEmptyTokenAccounts(position.mint);
+  } catch (err) {
+    // Rent cleanup must never turn a successful sell into a failed position close.
+    console.log(`[live] close empty token account ${position.mint.slice(0, 8)}... ${err.message}`);
+  }
+  return sell;
 }
 
 export async function executeConfirmedIntent(chatId, intentId) {

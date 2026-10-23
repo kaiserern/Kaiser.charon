@@ -1,9 +1,11 @@
+import { delayedQuote, validQuote, paperPnl, PAPER_VERSION } from './paperSafety.js';
+import { paperAudit } from '../db/paperAudit.js';
 import { now, json } from '../utils.js';
 import { numSetting, boolSetting, strategyById, slippageAdjustedMcap } from '../db/settings.js';
 import { db } from '../db/connection.js';
 import { firstPositiveNumber, marketCapFromGmgn, tokenPriceFromGmgn, computeAtrPercent, dynamicStopLossPercent } from '../utils.js';
 import { fetchGmgnTokenInfo } from '../enrichment/gmgn.js';
-import { fetchJupiterAsset, fetchJupiterHolders, fetchJupiterChartContext, fetchJupiterWalletPnl, fetchTokenSpotViaQuote } from '../enrichment/jupiter.js';
+import { fetchJupiterAsset, fetchJupiterHolders, fetchJupiterChartContext, fetchJupiterWalletPnl, fetchTokenSpotViaQuote, fetchJupiterExecutionQuote, fetchSolUsdPrice } from '../enrichment/jupiter.js';
 import { liveWalletPubkey } from '../liveExecutor.js';
 import { fetchSavedWalletExposure } from '../enrichment/wallets.js';
 import { filterCandidate } from '../pipeline/candidateBuilder.js';
@@ -105,6 +107,9 @@ export async function refreshCandidateForExecution(row) {
   };
   refreshed.filters = filterCandidate(refreshed);
   const executionFailures = [];
+  const freshPrice = firstPositiveNumber(tokenPriceFromGmgn(gmgn), asset?.usdPrice);
+  const freshMcap = firstPositiveNumber(marketCapFromGmgn(gmgn), asset?.mcap, asset?.fdv);
+  if (!freshPrice || !freshMcap) executionFailures.push('execution fresh market data: missing');
   if (!Number.isFinite(Number(refreshed.metrics.marketCapUsd)) || Number(refreshed.metrics.marketCapUsd) <= 0) {
     executionFailures.push('execution mcap: missing');
   }
@@ -126,14 +131,34 @@ const sellInProgress = new Set();
 
 export async function refreshPosition(position, { autoExit = true, jupiterPnl = null } = {}) {
   // Bug2 fix (2026-06-19): bypass 20s cache for live monitoring — flash crash detection requires fresh data
-  // Quote-first (2026-07-24): dry_run exit decisions use executable Jupiter quote (live pool
-  // reserves) as primary price — datapi mark is stale by design. Mark = fallback on 429/backoff.
-  const useQuote = position.execution_mode !== 'live' && numSetting('exit_quote_enabled', 1);
-  const [asset, qp] = await Promise.all([
-    fetchJupiterAsset(position.mint, { useCache: false, ttlMs: 3000 }),
-    useQuote ? fetchTokenSpotViaQuote(position.mint) : Promise.resolve(null),
-  ]);
-  const quotePrice = (Number.isFinite(qp) && qp > 0) ? qp : null;
+  // Quote-first: dry and live decisions share the same 10s per-mint executable quote snapshot.
+  // Wallet-PnL remains telemetry only; it must not alter exit decisions.
+  const useQuote = numSetting('exit_quote_enabled', 1);
+  let paperSnapshot = {};
+  try { paperSnapshot = JSON.parse(position.snapshot_json || '{}'); } catch {}
+  const isPaper = position.execution_mode !== 'live';
+  // Historical estimates cannot acquire execution evidence retroactively.
+  if (isPaper && paperSnapshot.paperVersion !== PAPER_VERSION) {
+    db.prepare('UPDATE dry_run_positions SET pnl_percent=NULL,pnl_sol=NULL WHERE id=? AND status=?').run(position.id, 'open');
+    return { ...position, pnl_sol: null, pnl_percent: null, exitReason: null, valuationStatus: 'legacy_unverified' };
+  }
+  const asset = await fetchJupiterAsset(position.mint, { useCache: false, ttlMs: 3000 });
+  const tokenAmountRaw = isPaper ? paperSnapshot.tokenAmountRaw : position.token_amount_raw || position.token_amount_est;
+  const sellQuote = useQuote && tokenAmountRaw
+    ? await fetchJupiterExecutionQuote({ inputMint: position.mint, outputMint: 'So11111111111111111111111111111111111111112', amount: tokenAmountRaw })
+    : null;
+  const sellRequest = { inputMint: position.mint, outputMint: 'So11111111111111111111111111111111111111112', amount: tokenAmountRaw };
+  const quoteValid = Boolean(sellQuote) && validQuote(sellQuote, sellRequest);
+  // Returning early here (pre-2026-10-23) froze the position for the whole quote
+  // outage: no SL, no trailing, exit 9 points past the stop. Fall back to the asset
+  // mark and flag the tick instead of skipping it.
+  const valuationStatus = quoteValid ? 'quote' : 'mark_fallback';
+  if (isPaper && !quoteValid && position.pnl_sol !== null) paperAudit(position.mint, 'valuation_mark_fallback', { positionId: position.id, reason: 'quote_missing_or_stale' });
+  const solUsd = useQuote && sellQuote?.outAmount ? await fetchSolUsdPrice() : null;
+  const quoteProceedsSol = sellQuote?.outAmount ? Number(sellQuote.outAmount) / 1e9 : null;
+  const quotePrice = quoteProceedsSol && solUsd && Number(tokenAmountRaw) > 0
+    ? (quoteProceedsSol * Number(solUsd)) / (Number(tokenAmountRaw) / (10 ** Number(asset?.decimals ?? 9)))
+    : null;
   const quoteMcap = quotePrice && Number(position.entry_price) > 0
     ? Number(position.entry_mcap) * (quotePrice / Number(position.entry_price))
     : null;
@@ -141,20 +166,31 @@ export async function refreshPosition(position, { autoExit = true, jupiterPnl = 
   const jupiterMcap = firstPositiveNumber(asset?.mcap, asset?.fdv);
   // Guard 1 DISABLED (2026-07-17): can't distinguish crash vs stale data — single source (Jupiter) is unreliable
   const price = firstPositiveNumber(quotePrice, jupiterPrice || null, position.high_water_price, position.entry_price);
-  const mcap = firstPositiveNumber(quoteMcap, jupiterMcap, position.high_water_mcap, position.entry_mcap);
+  let mcap = firstPositiveNumber(quoteMcap, jupiterMcap, position.high_water_mcap, position.entry_mcap);
   if (!Number.isFinite(Number(mcap)) || !Number.isFinite(Number(position.entry_mcap)) || Number(position.entry_mcap) <= 0) {
     return null;
   }
   // Guard 2 DISABLED (2026-07-17): drop >80% heuristic can't distinguish crash vs stale bonding curve data
-  const highWaterMcap = Math.max(Number(position.high_water_mcap || 0), Number(mcap));
+  let highWaterMcap = Math.max(Number(position.high_water_mcap || 0), Number(mcap));
   const highWaterPrice = Math.max(Number(position.high_water_price || 0), Number(price || 0));
   let pnlPercent = (Number(mcap) / Number(position.entry_mcap) - 1) * 100;
   const markPnlPercent = pnlPercent;
   let pnlSol = Number(position.size_sol) * pnlPercent / 100;
-  if (jupiterPnl && Number.isFinite(Number(jupiterPnl.totalPnlPercentageNative))) {
-    pnlPercent = Number(jupiterPnl.totalPnlPercentageNative);
-    pnlSol = Number.isFinite(Number(jupiterPnl.totalPnlNative)) ? Number(jupiterPnl.totalPnlNative) : pnlSol;
+  if (quoteProceedsSol != null && Number(position.size_sol) > 0) {
+    pnlSol = quoteProceedsSol - Number(position.size_sol);
+    pnlPercent = pnlSol / Number(position.size_sol) * 100;
   }
+
+  if (isPaper) {
+    if (quoteValid) {
+      const net = paperPnl(paperSnapshot.entryLamports, sellQuote.outAmount);
+      pnlSol = net.pnlSol; pnlPercent = net.pnlPercent;
+    }
+    // Use SOL quote returns for triggers and trailing, never the inferred USD supply.
+    mcap = Number(position.entry_mcap) * (1 + pnlPercent / 100);
+    highWaterMcap = Math.max(Number(position.high_water_mcap || 0), mcap);
+  }
+
   // Dynamic ATR-based stop loss: fetch chart context and compute ATR% to widen/narrow the static sl_percent.
   const stratForSl = strategyById(position.strategy_id);
   const useDynamicSl = (stratForSl?.use_dynamic_sl ?? numSetting('use_dynamic_sl', 1)) ? true : false;
@@ -199,7 +235,9 @@ export async function refreshPosition(position, { autoExit = true, jupiterPnl = 
     ? numSetting('trailing_tight_percent', 5)
     : Math.abs(Number(position.trailing_percent));
   const trailingFloor = numSetting('trailing_floor_percent', 8);
-  const trailingHit = trailingArmed && position.trailing_enabled && pnlPercent >= trailingFloor && trailDrop <= -effectiveTrailPct;
+  // Trailing stop triggers if price drops from high water mark by effectiveTrailPct,
+  // OR if an armed position pulls back to/below the trailing floor (protecting armed profit).
+  const trailingHit = trailingArmed && position.trailing_enabled && (trailDrop <= -effectiveTrailPct || pnlPercent <= trailingFloor);
   let exitReason = null;
   let closed = false;
 
@@ -257,11 +295,11 @@ export async function refreshPosition(position, { autoExit = true, jupiterPnl = 
     }
   }
 
-  // Standard exit checks
+  // Standard exit checks: trailing/floor exits take priority for armed winners
   if (!exitReason) {
-    if (slHit) exitReason = 'SL';
+    if (trailingHit) exitReason = 'TRAILING_TP';
+    else if (slHit) exitReason = 'SL';
     else if (tpHit && !position.trailing_enabled) exitReason = 'TP';
-    else if (trailingHit) exitReason = 'TRAILING_TP';
   }
 
 
@@ -271,9 +309,10 @@ export async function refreshPosition(position, { autoExit = true, jupiterPnl = 
 
   db.prepare(`
     UPDATE dry_run_positions
-    SET high_water_mcap = ?, high_water_price = ?, trailing_armed = ?
+    SET high_water_mcap = ?, high_water_price = ?, trailing_armed = ?,
+        pnl_percent = ?, pnl_sol = ?
     WHERE id = ?
-  `).run(highWaterMcap, highWaterPrice, trailingArmed ? 1 : 0, position.id);
+  `).run(highWaterMcap, highWaterPrice, trailingArmed ? 1 : 0, pnlPercent, pnlSol, position.id);
 
   if (exitReason && autoExit && position.execution_mode === 'live') {
     if (sellInProgress.has(position.id)) return { ...position, exitReason: null };
@@ -287,8 +326,17 @@ export async function refreshPosition(position, { autoExit = true, jupiterPnl = 
     const receivedLamports = Number(sell.outputAmount || 0);
     const receivedSol = receivedLamports > 0 ? receivedLamports / 1_000_000_000 : null;
     if (receivedSol != null) {
-      finalPnlSol = receivedSol - Number(position.size_sol);
+      let entrySwap = null;
+      try { entrySwap = JSON.parse(position.snapshot_json || '{}').swap; } catch {}
+      const executionFeesSol = (
+        Number(entrySwap?.order?.signatureFeeLamports || 0) +
+        Number(entrySwap?.order?.prioritizationFeeLamports || 0) +
+        Number(sell.order?.signatureFeeLamports || 0) +
+        Number(sell.order?.prioritizationFeeLamports || 0)
+      ) / 1_000_000_000;
+      finalPnlSol = receivedSol - Number(position.size_sol) - executionFeesSol;
       finalPnlPercent = (receivedSol / Number(position.size_sol) - 1) * 100;
+      finalPnlPercent = finalPnlSol / Number(position.size_sol) * 100;
     }
     db.prepare(`
       UPDATE dry_run_positions
@@ -302,21 +350,28 @@ export async function refreshPosition(position, { autoExit = true, jupiterPnl = 
     `).run(position.id, position.mint, now(), price, mcap, position.size_sol, position.token_amount_est, exitReason, json({ pnlPercent: finalPnlPercent, pnlSol: finalPnlSol, receivedSol: receivedSol ?? null, sell, effectiveSlPercent, atrPercent, baseSlPercent: Number(position.sl_percent) }));
     closed = true;
   } else if (exitReason && autoExit) {
-    // Apply exit slippage for dry_run PnL
-    const exitMcap = slippageAdjustedMcap(quotePrice ? Number(position.entry_mcap) * (quotePrice / Number(position.entry_price)) : mcap, 'exit');
-    const dryExitPrice = quotePrice || price;
-    const dryExitMcap = quotePrice ? Number(position.entry_mcap) * (quotePrice / Number(position.entry_price)) : mcap;
-    const dryPnlPercent = (Number(exitMcap) / Number(position.entry_mcap) - 1) * 100;
-    const dryPnlSol = Number(position.size_sol) * dryPnlPercent / 100;
-    db.prepare(`
-      UPDATE dry_run_positions
-      SET status = 'closed', closed_at_ms = ?, exit_price = ?, exit_mcap = ?, exit_reason = ?, pnl_percent = ?, pnl_sol = ?
-      WHERE id = ?
-    `).run(now(), dryExitPrice, dryExitMcap, exitReason, dryPnlPercent, dryPnlSol, position.id);
-    db.prepare(`
-      INSERT INTO dry_run_trades (position_id, mint, side, at_ms, price, mcap, size_sol, token_amount_est, reason, payload_json)
-      VALUES (?, ?, 'sell', ?, ?, ?, ?, ?, ?, ?)
-    `).run(position.id, position.mint, now(), dryExitPrice, dryExitMcap, position.size_sol, position.token_amount_est, exitReason, json({ pnlPercent: dryPnlPercent, pnlSol: dryPnlSol, effectiveSlPercent, atrPercent, baseSlPercent: Number(position.sl_percent), slippage_pct: numSetting('dry_run_slippage_percent', 0) }));
+    let execution = null;
+    if (quoteValid) {
+      try { execution = await delayedQuote(sellRequest, fetchJupiterExecutionQuote, { reference: sellQuote }); }
+      catch (error) { paperAudit(position.mint, 'exit_rejected', { positionId: position.id, reason: error.message, trigger: exitReason }); }
+    }
+    // A stop that cannot find a quote must still close: mark-fill it and keep the
+    // evidence labelled, otherwise the loss runs unmonitored until quotes return.
+    const net = execution ? paperPnl(paperSnapshot.entryLamports, execution.fill.outAmount) : null;
+    const dryPnlPercent = net ? net.pnlPercent : pnlPercent, dryPnlSol = net ? net.pnlSol : pnlSol;
+    const dryExitMcap = net ? Number(position.entry_mcap) * (1 + dryPnlPercent / 100) : mcap;
+    const dryExitPrice = net ? Number(position.entry_price) * Number(execution.fill.outAmount) / Number(paperSnapshot.entryLamports) : price;
+    const evidence = net
+      ? { paperVersion: PAPER_VERSION, pnlPercent: dryPnlPercent, pnlSol: dryPnlSol, ...net, entryLamports: paperSnapshot.entryLamports, proceedsLamports: execution.fill.outAmount, assumedNetworkFeeLamports: '5000', assumedPriorityFeeLamports: '10000', referenceQuote: execution.reference, exitQuote: execution.fill }
+      : { paperVersion: `${PAPER_VERSION}+mark-fallback`, pnlPercent: dryPnlPercent, pnlSol: dryPnlSol, exitMarkPrice: price, exitMarkMcap: mcap, reason: 'quote_unavailable' };
+    const closedNow = db.transaction(() => {
+      const changed = db.prepare(`UPDATE dry_run_positions SET status='closed',closed_at_ms=?,exit_price=?,exit_mcap=?,exit_reason=?,pnl_percent=?,pnl_sol=? WHERE id=? AND status='open'`).run(now(), dryExitPrice, dryExitMcap, exitReason, dryPnlPercent, dryPnlSol, position.id).changes;
+      if (!changed) return false;
+      db.prepare(`INSERT INTO dry_run_trades(position_id,mint,side,at_ms,price,mcap,size_sol,token_amount_est,reason,payload_json) VALUES(?,?,'sell',?,?,?,?,?,?,?)`).run(position.id, position.mint, now(), dryExitPrice, dryExitMcap, position.size_sol, tokenAmountRaw, exitReason, json(evidence));
+      paperAudit(position.mint, net ? 'exit_filled' : 'exit_filled_mark_fallback', { positionId: position.id, ...evidence });
+      return true;
+    })();
+    if (!closedNow) return { ...position, exitReason: null };
     finalPnlPercent = dryPnlPercent;
     finalPnlSol = dryPnlSol;
     closed = true;
@@ -339,6 +394,7 @@ export async function refreshPosition(position, { autoExit = true, jupiterPnl = 
     exit_reason: closed ? exitReason : position.exit_reason,
     exit_mcap: closed ? mcap : position.exit_mcap,
     exit_price: closed ? price : position.exit_price,
+    valuationStatus,
   };
 }
 

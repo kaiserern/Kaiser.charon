@@ -9,6 +9,8 @@ import {
   PREGRAD_MAX_ATH_MULTIPLE,
 } from '../config.js';
 import { now } from '../utils.js';
+import { singleFlight } from '../utils/singleFlight.js';
+import { cfFetchJson } from '../enrichment/cfFetch.js';
 import { boolSetting, numSetting } from '../db/settings.js';
 import { sendTelegram } from '../telegram/send.js';
 
@@ -92,15 +94,29 @@ function detectGraduations(currentCoins) {
   }
 }
 
-export async function fetchPregradTokens() {
+// pump.fun frontend sits behind Cloudflare and answers 403 to this host, which kept
+// the pregrad route permanently in backoff. Fall back to the browser sidecar.
+async function fetchPregradCoins() {
   try {
     const res = await axios.get('https://frontend-api-v3.pump.fun/coins', {
       params: { sort: 'last_trade_timestamp', order: 'DESC', limit: 200 },
       timeout: 10_000,
       headers: PUMPFUN_HEADERS,
     });
+    const direct = Array.isArray(res.data) ? res.data : (Array.isArray(res.data?.coins) ? res.data.coins : []);
+    if (direct.length) return direct;
+  } catch (err) {
+    console.log(`[pregrad] direct fetch ${err.response?.status || err.message}; trying sidecar`);
+  }
+  const viaBrowser = await cfFetchJson('https://frontend-api-v3.pump.fun/coins?sort=last_trade_timestamp&order=DESC&limit=200');
+  const coins = Array.isArray(viaBrowser) ? viaBrowser : (Array.isArray(viaBrowser?.coins) ? viaBrowser.coins : []);
+  if (!coins.length) throw new Error('pregrad coins unavailable (direct 403 + sidecar empty)');
+  return coins;
+}
 
-    const coins = Array.isArray(res.data) ? res.data : (Array.isArray(res.data?.coins) ? res.data.coins : []);
+export async function fetchPregradTokens() {
+  try {
+    const coins = await fetchPregradCoins();
     const minLamports = numSetting('pregrad_min_rssr_sol', PREGRAD_MIN_RSSR_SOL) * PREGRAD_LAMPORTS;
     const maxLamports = numSetting('pregrad_max_rssr_sol', PREGRAD_MAX_RSSR_SOL) * PREGRAD_LAMPORTS;
     const maxAgeMs = numSetting('pregrad_max_age_ms', PREGRAD_MAX_AGE_MS);
@@ -181,16 +197,17 @@ export function startPumpfunPregrad(trackFailure) {
   stopped = false;
   consecutiveErrors = 0;
 
+  const scan = singleFlight(fetchPregradTokens);
   const cycle = () => {
     if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
       console.log(`[pregrad] backing off — ${consecutiveErrors} consecutive errors, skipping cycle`);
       return;
     }
     const wrapped = trackFailure || ((fn) => fn().catch(err => console.log(`[pregrad] ${err.message}`)));
-    wrapped(() => fetchPregradTokens());
+    wrapped(scan);
   };
 
-  fetchPregradTokens().catch(err => console.log(`[pregrad] initial fetch failed: ${err.message}`));
+  scan().catch(err => console.log(`[pregrad] initial fetch failed: ${err.message}`));
   pollTimer = setInterval(cycle, PREGRAD_POLL_MS);
   console.log(`[pregrad] polling started (interval ${PREGRAD_POLL_MS}ms)`);
 }

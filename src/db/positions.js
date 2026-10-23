@@ -1,6 +1,10 @@
+import { delayedQuote, PAPER_VERSION } from '../execution/paperSafety.js';
+import { paperAudit } from './paperAudit.js';
 import { db } from './connection.js';
 import { now, json } from '../utils.js';
 import { numSetting, boolSetting, setting, activeStrategy, slippageAdjustedMcap } from './settings.js';
+import { fetchJupiterExecutionQuote, fetchSolUsdPrice } from '../enrichment/jupiter.js';
+import { WSOL_MINT } from '../config.js';
 
 export function openPositions() {
   return db.prepare('SELECT * FROM dry_run_positions WHERE status = ? ORDER BY opened_at_ms DESC').all('open');
@@ -33,7 +37,7 @@ export function allPositions(limit = 10) {
   return db.prepare('SELECT * FROM dry_run_positions ORDER BY id DESC LIMIT ?').all(limit);
 }
 
-export function createDryRunPosition(candidateId, candidate, decision, reason = 'llm_buy') {
+export async function createDryRunPosition(candidateId, candidate, decision, reason = 'llm_buy') {
   const strat = activeStrategy();
   let sizeSol = strat.position_size_sol ?? numSetting('dry_run_buy_sol', 0.1);
   
@@ -49,7 +53,26 @@ export function createDryRunPosition(candidateId, candidate, decision, reason = 
     console.log(`[position] risk-adjusted size: ${originalSize} → ${sizeSol} SOL (total risk severity: ${totalRiskSeverity}, flags: ${riskFlags.map(f => f.type).join(', ')})`);
   }
   
-  const entryPrice = Number(candidate.metrics.priceUsd || 0) || null;
+  const amountLamports = Math.floor(sizeSol * 1_000_000_000);
+  let entryQuote, referenceQuote;
+  try {
+    const result = await delayedQuote({ inputMint: WSOL_MINT, outputMint: candidate.token.mint, amount: amountLamports }, fetchJupiterExecutionQuote, { attempts: 3 });
+    entryQuote = result.fill; referenceQuote = result.reference;
+  } catch (error) {
+    paperAudit(candidate.token.mint, 'entry_rejected', { reason: error.message, candidateId });
+    throw error;
+  }
+  const tokenAmountRaw = String(entryQuote.outAmount);
+  const solUsd = await fetchSolUsdPrice();
+  const tokenDecimals = Number(candidate.jupiterAsset?.decimals ?? candidate.metrics.decimals);
+  if (!Number.isInteger(tokenDecimals) || tokenDecimals < 0 || tokenDecimals > 18 || !Number.isFinite(Number(solUsd)) || Number(solUsd) <= 0) {
+    paperAudit(candidate.token.mint, 'entry_rejected', { reason: 'missing_decimals_or_sol_price', candidateId });
+    throw new Error('missing_decimals_or_sol_price');
+  }
+  const tokenAmount = tokenAmountRaw ? Number(tokenAmountRaw) / (10 ** Math.max(0, Math.min(18, tokenDecimals))) : 0;
+  const entryPrice = tokenAmount > 0 && Number(solUsd) > 0
+    ? (sizeSol * Number(solUsd)) / tokenAmount
+    : Number(candidate.metrics.priceUsd || 0) || null;
   let entryMcap = Number(candidate.metrics.marketCapUsd || candidate.metrics.graduatedMarketCapUsd || 0) || null;
   entryMcap = slippageAdjustedMcap(entryMcap, 'entry');
   const tp = Number(decision.suggested_tp_percent || strat.tp_percent || numSetting('default_tp_percent', 50));
@@ -58,6 +81,7 @@ export function createDryRunPosition(candidateId, candidate, decision, reason = 
   const trailingPercent = strat.trailing_percent ?? numSetting('default_trailing_percent', 20);
 
   return db.transaction(() => {
+    if (tradingMode() !== 'dry_run' || !canOpenMorePositions()) throw new Error('paper_mode_or_position_limit_changed');
     const existing = db.prepare(`
       SELECT id FROM dry_run_positions WHERE mint = ? AND status = 'open' LIMIT 1
     `).get(candidate.token.mint);
@@ -99,7 +123,7 @@ export function createDryRunPosition(candidateId, candidate, decision, reason = 
       sizeSol,
       entryPrice,
       entryMcap,
-      null,
+      tokenAmountRaw,
       entryPrice,
       entryMcap,
       tp,
@@ -108,17 +132,18 @@ export function createDryRunPosition(candidateId, candidate, decision, reason = 
       trailingPercent,
       decision.id || null,
       strat.id,
-      json({ candidate, decision, reason, strategy: strat.id }),
+      json({ candidate, decision, reason, strategy: strat.id, strategyConfig: strat, paperVersion: PAPER_VERSION, entryLamports: String(amountLamports), tokenAmountRaw, assumedNetworkFeeLamports: '5000', assumedPriorityFeeLamports: '10000', rentAccounting: 'not_modeled_use_office_for_capital_test', entryQuote, referenceQuote }),
     );
     const positionId = Number(result.lastInsertRowid);
     db.prepare(`
       INSERT INTO dry_run_trades (position_id, mint, side, at_ms, price, mcap, size_sol, token_amount_est, reason, payload_json)
       VALUES (?, ?, 'buy', ?, ?, ?, ?, ?, ?, ?)
-    `).run(positionId, candidate.token.mint, now(), entryPrice, entryMcap, sizeSol, null, reason, json({ candidateId, decision }));
+    `).run(positionId, candidate.token.mint, now(), entryPrice, entryMcap, sizeSol, tokenAmountRaw, reason, json({ candidateId, decision, entryQuote }));
     db.prepare(`
       INSERT INTO tp_sl_rules (position_id, tp_percent, sl_percent, trailing_enabled, trailing_percent, updated_at_ms)
       VALUES (?, ?, ?, ?, ?, ?)
     `).run(positionId, tp, sl, trailingEnabled, trailingPercent, now());
+    paperAudit(candidate.token.mint, 'entry_filled', { positionId, candidateId, entryLamports: String(amountLamports), tokenAmountRaw, entryQuote, referenceQuote });
     return { id: positionId, isNew: true };
   })();
 }

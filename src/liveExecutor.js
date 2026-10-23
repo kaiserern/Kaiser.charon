@@ -1,6 +1,14 @@
 import axios from 'axios';
 import bs58 from 'bs58';
-import { Connection, Keypair, PublicKey, VersionedTransaction } from '@solana/web3.js';
+import {
+  Connection,
+  Keypair,
+  PublicKey,
+  Transaction,
+  TransactionInstruction,
+  VersionedTransaction,
+  sendAndConfirmTransaction,
+} from '@solana/web3.js';
 import {
   JUPITER_API_KEY,
   JUPITER_SLIPPAGE_BPS,
@@ -8,6 +16,7 @@ import {
   JSON_HEADERS,
   SOLANA_PRIVATE_KEY,
   SOLANA_RPC_URL,
+  WSOL_MINT,
 } from './config.js';
 
 let liveWallet = null;
@@ -62,6 +71,35 @@ export async function liveWalletBalanceLamports() {
   return solanaConnection.getBalance(liveWallet.publicKey, 'confirmed');
 }
 
+export async function closeEmptyTokenAccounts(mint) {
+  requireLiveExecution();
+  const accounts = await solanaConnection.getParsedTokenAccountsByOwner(
+    liveWallet.publicKey,
+    { mint: new PublicKey(mint) },
+    'confirmed',
+  );
+  const empty = accounts.value.filter(({ account }) =>
+    account.data.parsed.info.tokenAmount.amount === '0'
+  );
+  if (!empty.length) return null;
+
+  const tx = new Transaction();
+  for (const { pubkey, account } of empty) {
+    tx.add(new TransactionInstruction({
+      programId: account.owner,
+      keys: [
+        { pubkey, isSigner: false, isWritable: true },
+        { pubkey: liveWallet.publicKey, isSigner: false, isWritable: true },
+        { pubkey: liveWallet.publicKey, isSigner: true, isWritable: false },
+      ],
+      data: Buffer.from([9]), // SPL Token / Token-2022 CloseAccount
+    }));
+  }
+  return sendAndConfirmTransaction(solanaConnection, tx, [liveWallet], {
+    commitment: 'confirmed',
+  });
+}
+
 async function jupiterOrder({ inputMint, outputMint, amount }) {
   requireLiveExecution();
   const url = new URL(`${JUPITER_SWAP_BASE_URL.replace(/\/$/, '')}/order`);
@@ -69,6 +107,7 @@ async function jupiterOrder({ inputMint, outputMint, amount }) {
   url.searchParams.set('outputMint', outputMint);
   url.searchParams.set('amount', String(amount));
   url.searchParams.set('taker', liveWallet.publicKey.toBase58());
+  url.searchParams.set('slippageBps', String(JUPITER_SLIPPAGE_BPS));
   const res = await axios.get(url.toString(), {
     timeout: 20_000,
     headers: { ...JSON_HEADERS, 'x-api-key': JUPITER_API_KEY },
@@ -103,8 +142,18 @@ async function jupiterExecute(order, signedTransaction) {
   return res.data;
 }
 
-export async function executeJupiterSwap({ inputMint, outputMint, amount }) {
+export async function executeJupiterSwap({ inputMint, outputMint, amount, guard = null }) {
   const order = await jupiterOrder({ inputMint, outputMint, amount });
+  // Freshness gate hook: dipanggil SEBELUM sign/broadcast. Kalau guard mengembalikan
+  // string, swap dibatalkan (tidak ada dana terpakai) dengan kode STALE_SIGNAL_GUARD.
+  if (typeof guard === 'function') {
+    const abortReason = guard(order);
+    if (abortReason) {
+      const err = new Error(abortReason);
+      err.code = 'STALE_SIGNAL_GUARD';
+      throw err;
+    }
+  }
   const transaction = orderTransactionBase64(order);
   if (!transaction) throw new Error('Jupiter order did not include a transaction.');
   const signedTransaction = signTransactionBase64(transaction);

@@ -1,7 +1,7 @@
 import axios from 'axios';
 import { SIGNAL_SERVER_URL, SIGNAL_SERVER_KEY, SIGNAL_POLL_MS } from '../config.js';
 import { now } from '../utils.js';
-import { activeStrategy } from '../db/settings.js';
+import { activeStrategy, boolSetting } from '../db/settings.js';
 import { storeSignalEvent, trendingSignalPass, trending } from './trending.js';
 import { graduated } from './graduated.js';
 
@@ -34,7 +34,8 @@ export async function fetchServerSignals() {
   try {
     const url = new URL('/api/signals', SIGNAL_SERVER_URL);
     url.searchParams.set('limit', '100');
-    url.searchParams.set('minSources', '2');
+    const strat = activeStrategy();
+    url.searchParams.set('minSources', String(Math.max(1, Math.ceil(Number(strat.min_source_count) || 1))));
 
     const res = await axios.get(url.toString(), {
       timeout: 10_000,
@@ -44,7 +45,6 @@ export async function fetchServerSignals() {
 
     prune(seenSignals, 10 * 60_000);
 
-    const strat = activeStrategy();
     let processed = 0;
     let triggered = 0;
     let dipAlerts = 0;
@@ -101,6 +101,10 @@ export async function fetchServerSignals() {
       const trendingToken = trending.get(mint) || null;
       const hasFee = Boolean(signal.feeClaim);
       const sourceCount = signal.sourceCount || 1;
+
+      // trending_enabled=false only gated the GMGN poller; trending candidates still
+      // arrived here. Enforce the flag at ingress so the killed routes stay dead.
+      if (!boolSetting('trending_enabled', true) && (trendingToken || signal.trending)) { processed++; continue; }
 
       // Strategy gate: check source count
       if (sourceCount < strat.min_source_count) { processed++; continue; }

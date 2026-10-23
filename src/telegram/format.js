@@ -97,17 +97,26 @@ export function batchRevealSummary(batchId, rows, decision, triggerCandidateId =
 }
 
 export function formatPosition(position) {
-  const pnl = position.pnl_percent != null
-    ? Number(position.pnl_percent)
-    : position.entry_mcap && position.high_water_mcap
-      ? (Number(position.high_water_mcap) / Number(position.entry_mcap) - 1) * 100
-      : 0;
+  // For open: current PnL estimate. For closed: actual pnl_percent.
+  let pnl;
+  if (position.pnl_percent != null) {
+    pnl = Number(position.pnl_percent);
+  } else if (position.entry_mcap && position.current_mcap != null) {
+    pnl = (Number(position.current_mcap) / Number(position.entry_mcap) - 1) * 100;
+  } else if (position.entry_price && position.current_price != null) {
+    pnl = (Number(position.current_price) / Number(position.entry_price) - 1) * 100;
+  } else {
+    pnl = 0;
+  }
+  const highLabel = position.status === 'closed' && position.exit_mcap != null
+    ? `Exit: ${fmtUsd(position.exit_mcap)} (from high ${fmtUsd(position.high_water_mcap)}, ${fmtPct(position.high_water_mcap / position.entry_mcap * 100 - 100)})`
+    : `High: ${fmtUsd(position.high_water_mcap)}`;
   return [
     `📍 <b>${escapeHtml(position.symbol || short(position.mint))}</b> #${position.id}`,
     `Token: <a href="${gmgnLink(position.mint)}">${short(position.mint)}</a>`,
     `Status: <b>${escapeHtml(position.status)}</b> · Mode: <b>${escapeHtml(position.execution_mode || 'dry_run')}</b> · Strategy: <b>${escapeHtml(position.strategy_id || 'sniper')}</b>`,
     position.entry_signature ? `Entry TX: <a href="${txLink(position.entry_signature)}">${short(position.entry_signature)}</a>` : null,
-    `Entry mcap: ${fmtUsd(position.entry_mcap)} · High: ${fmtUsd(position.high_water_mcap)}`,
+    `Entry mcap: ${fmtUsd(position.entry_mcap)} · ${highLabel}`,
     `Size: ${fmtSol(position.size_sol)} SOL · PnL: ${fmtPct(pnl)}`,
     `TP: ${fmtPct(position.tp_percent)} · SL: ${fmtPct(position.sl_percent)} · Trail: ${position.trailing_enabled ? `${fmtPct(position.trailing_percent)}` : 'off'}`,
     position.exit_reason ? `Exit: ${escapeHtml(position.exit_reason)} at ${fmtUsd(position.exit_mcap)} (${fmtPct(position.pnl_percent)})` : null,

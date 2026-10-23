@@ -187,18 +187,29 @@ export async function closePosition(chatId, id, reason) {
   const pnlSol = Number(row.size_sol) * pnlPercent / 100;
   let sell = null;
   if (row.execution_mode === 'live') sell = await executeLiveSell(row, reason);
+  let entrySwap = null;
+  try { entrySwap = JSON.parse(row.snapshot_json || '{}').swap; } catch {}
+  const receivedSol = row.execution_mode === 'live' ? Number(sell?.outputAmount || 0) / 1_000_000_000 : null;
+  const executionFeesSol = row.execution_mode === 'live' ? (
+    Number(entrySwap?.order?.signatureFeeLamports || 0) +
+    Number(entrySwap?.order?.prioritizationFeeLamports || 0) +
+    Number(sell?.order?.signatureFeeLamports || 0) +
+    Number(sell?.order?.prioritizationFeeLamports || 0)
+  ) / 1_000_000_000 : 0;
+  const finalPnlSol = receivedSol > 0 ? receivedSol - Number(row.size_sol) - executionFeesSol : pnlSol;
+  const finalPnlPercent = receivedSol > 0 ? finalPnlSol / Number(row.size_sol) * 100 : pnlPercent;
   db.prepare(`
     UPDATE dry_run_positions
     SET status = 'closed', closed_at_ms = ?, exit_price = ?, exit_mcap = ?, exit_reason = ?,
         pnl_percent = ?, pnl_sol = ?, exit_signature = ?
     WHERE id = ?
-  `).run(now(), price, mcap, reason, pnlPercent, pnlSol, sell?.signature || null, id);
+  `).run(now(), price, mcap, reason, finalPnlPercent, finalPnlSol, sell?.signature || null, id);
   db.prepare(`
     INSERT INTO dry_run_trades (position_id, mint, side, at_ms, price, mcap, size_sol, token_amount_est, reason, payload_json)
     VALUES (?, ?, 'sell', ?, ?, ?, ?, ?, ?, ?)
-  `).run(id, row.mint, now(), price, mcap, row.size_sol, row.token_amount_est, reason, json({ pnlPercent, pnlSol, sell }));
+  `).run(id, row.mint, now(), price, mcap, row.size_sol, row.token_amount_est, reason, json({ pnlPercent: finalPnlPercent, pnlSol: finalPnlSol, receivedSol, executionFeesSol, sell }));
   const label = row.execution_mode === 'live' ? 'Closed live position' : 'Closed dry-run position';
-  await bot.sendMessage(chatId, `${label} #${id}: ${escapeHtml(reason)} ${fmtPct(pnlPercent)}`, { parse_mode: 'HTML' });
+  await bot.sendMessage(chatId, `${label} #${id}: ${escapeHtml(reason)} ${fmtPct(finalPnlPercent)}`, { parse_mode: 'HTML' });
 }
 
 export async function updatePositionRule(chatId, id, field, nextValue, query = null) {

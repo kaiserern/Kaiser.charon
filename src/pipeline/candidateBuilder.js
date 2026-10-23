@@ -1,5 +1,6 @@
 import { now, firstPositiveNumber, marketCapFromGmgn, tokenPriceFromGmgn, lamToSol } from '../utils.js';
 import { activeStrategy } from '../db/settings.js';
+import { JUPITER_ASSET_FRESH_TTL_MS } from '../config.js';
 import { fetchGmgnTokenInfo } from '../enrichment/gmgn.js';
 import { fetchJupiterAsset, fetchJupiterHolders, fetchJupiterChartContext } from '../enrichment/jupiter.js';
 import { fetchSavedWalletExposure } from '../enrichment/wallets.js';
@@ -454,7 +455,7 @@ export async function buildCandidate({ mint, fee = null, signature = null, gradu
   if (isFreshlyGraduated) {
     console.log(`[candidate] fast path for freshly graduated ${mint.slice(0, 8)}...`);
     const [jupAsset, jupHolders] = await Promise.all([
-      fetchJupiterAsset(mint),
+      fetchJupiterAsset(mint, { ttlMs: JUPITER_ASSET_FRESH_TTL_MS }),
       fetchJupiterHolders(mint),
     ]);
     jupiterAsset = jupAsset;

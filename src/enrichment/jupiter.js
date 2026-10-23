@@ -1,6 +1,6 @@
 import axios from 'axios';
-import { WSOL_MINT, JSON_HEADERS } from '../config.js';
-import { now } from '../utils.js';
+import { WSOL_MINT, JSON_HEADERS, JUPITER_API_KEY, JUPITER_SWAP_BASE_URL } from '../config.js';
+import { now, sleep } from '../utils.js';
 
 const jupiterAssetCache = new Map();
 let jupiterAssetBackoffUntil = 0;
@@ -18,6 +18,20 @@ function setJupiterAssetBackoff(err) {
 }
 
 let quoteBackoffUntil = 0;
+const quoteSnapshotCache = new Map();
+const QUOTE_SNAPSHOT_MS = 10_000;
+// The keyed quote plan is small (x-ratelimit-current: 10). Bursts — 2 quotes per
+// position tick plus 3 retries per entry — hit 429 instantly, so requests are paced
+// instead of fired in parallel.
+const QUOTE_MIN_GAP_MS = 130;
+let quoteNextSlot = 0;
+
+async function quoteSlot() {
+  const at = Date.now();
+  const slot = Math.max(at, quoteNextSlot);
+  quoteNextSlot = slot + QUOTE_MIN_GAP_MS;
+  if (slot > at) await sleep(slot - at);
+}
 
 function quoteBackoffActive() {
   return now() < quoteBackoffUntil;
@@ -27,7 +41,9 @@ function setQuoteBackoff(err) {
   if (err.response?.status !== 429) return;
   const resetHeader = Number(err.response?.headers?.['x-ratelimit-reset'] || 0);
   const resetMs = resetHeader > 1_000_000_000_000 ? resetHeader : resetHeader * 1000;
-  quoteBackoffUntil = resetMs > now() ? resetMs : now() + 30_000;
+  // 30s used to black out EVERY quote (measured 28.6% of the day dead) which froze
+  // position monitoring; cap the wait so a single 429 costs one tick, not 10.
+  quoteBackoffUntil = now() + Math.min(Math.max(resetMs - now(), 1_000), 10_000);
   console.log(`[quote] backing off until ${new Date(quoteBackoffUntil).toISOString()} (429)`);
 }
 
@@ -74,7 +90,7 @@ function normalizeJupiterTrendingRow(row, interval, rank) {
 async function fetchJupiterAsset(mint, { useCache = true, ttlMs = 20_000 } = {}) {
   const cached = jupiterAssetCache.get(mint);
   if (useCache && cached && now() - cached.at < ttlMs) return cached.data;
-  if (jupiterAssetBackoffActive()) return cached?.data || null;
+  if (jupiterAssetBackoffActive()) return useCache ? cached?.data || null : null;
   try {
     const url = new URL('https://datapi.jup.ag/v1/assets/search');
     url.searchParams.set('query', mint);
@@ -83,28 +99,34 @@ async function fetchJupiterAsset(mint, { useCache = true, ttlMs = 20_000 } = {})
       headers: JSON_HEADERS,
     });
     const rows = Array.isArray(res.data) ? res.data : [];
-    const data = rows.find(row => row?.id === mint) || rows[0] || null;
+    const data = rows.find(row => row?.id === mint) || null;
     jupiterAssetCache.set(mint, { at: now(), data });
     return data;
   } catch (err) {
     setJupiterAssetBackoff(err);
     if (err.response?.status !== 429) console.log(`[asset] ${mint.slice(0, 8)}... ${err.response?.status || ''} ${err.message}`);
-    return cached?.data || null;
+    return useCache ? cached?.data || null : null;
   }
 }
 
 async function fetchSolUsdPrice() {
-  try {
-    const res = await axios.get(`https://lite-api.jup.ag/price/v3?ids=${WSOL_MINT}`, {
-      timeout: 5000,
-      headers: JSON_HEADERS,
-    });
-    const price = Number(res.data?.[WSOL_MINT]?.usdPrice);
-    return Number.isFinite(price) && price > 0 ? price : null;
-  } catch (err) {
-    console.log(`[sol-price] ${err.response?.status || ''} ${err.message}`);
-    return null;
+  const keyed = JUPITER_API_KEY
+    ? { ...JSON_HEADERS, 'x-api-key': JUPITER_API_KEY }
+    : JSON_HEADERS;
+  const hosts = JUPITER_API_KEY
+    ? ['https://api.jup.ag', 'https://lite-api.jup.ag']
+    : ['https://lite-api.jup.ag'];
+  for (const host of hosts) {
+    try {
+      await quoteSlot();
+      const res = await axios.get(`${host}/price/v3?ids=${WSOL_MINT}`, { timeout: 5000, headers: keyed });
+      const price = Number(res.data?.[WSOL_MINT]?.usdPrice);
+      if (Number.isFinite(price) && price > 0) return price;
+    } catch (err) {
+      console.log(`[sol-price] ${host} ${err.response?.status || ''} ${err.message}`);
+    }
   }
+  return null;
 }
 
 async function estimateTokenAmountFromSol(sizeSol, entryPrice) {
@@ -229,25 +251,61 @@ async function fetchSolUsdPriceCached() {
   return price;
 }
 
-// Fixed 1000-token reference amount ignores price impact for large sizes —
-// upgrade to position-sized quotes when size_sol > 1.
-async function fetchTokenSpotViaQuote(mint) {
+async function jupiterQuoteOnce(params, label) {
   if (quoteBackoffActive()) return null;
   try {
-    const url = new URL('https://lite-api.jup.ag/swap/v1/quote');
-    url.searchParams.set('inputMint', mint);
-    url.searchParams.set('outputMint', WSOL_MINT);
-    url.searchParams.set('amount', '1000000000');
-    url.searchParams.set('slippageBps', '100');
+    await quoteSlot();
+    const url = new URL(`${JUPITER_SWAP_BASE_URL}/quote`);
+    for (const [key, value] of Object.entries(params)) url.searchParams.set(key, String(value));
+    // The keyed endpoint has a higher tier; the old hardcoded lite-api host was
+    // unauthenticated and sat at ~1 req/s, so monitoring was permanently 429'd.
+    const headers = JUPITER_API_KEY ? { ...JSON_HEADERS, 'x-api-key': JUPITER_API_KEY } : JSON_HEADERS;
+    const res = await axios.get(url.toString(), { timeout: 10_000, headers });
+    return res.data?.outAmount ? { ...res.data, observedAtMs: now() } : null;
+  } catch (err) {
+    setQuoteBackoff(err);
+    if (err.response?.status !== 429) console.log(`[quote] ${label} ${err.response?.status || ''} ${err.message}`);
+    return null;
+  }
+}
+
+// A freshly migrated mint often has no route for a few hundred ms — retry instead of
+// dropping the entry (retries skip 429s, which are handled by the backoff).
+async function jupiterQuote(params, label, attempts = 3) {
+  for (let i = 0; i < attempts; i++) {
+    const quote = await jupiterQuoteOnce(params, label);
+    if (quote) return quote;
+    if (quoteBackoffActive()) return null;
+    await sleep(350);
+  }
+  return null;
+}
+
+// Fixed 1000-token reference amount ignores price impact for large sizes —
+// upgrade to position-sized quotes when size_sol > 1.
+export async function fetchJupiterExecutionQuote({ inputMint, outputMint, amount }) {
+  return jupiterQuote({ inputMint, outputMint, amount, slippageBps: 100 }, 'execution');
+}
+
+async function fetchTokenSpotViaQuote(mint, decimals = 9) {
+  const normalizedDecimals = Number.isFinite(Number(decimals)) ? Math.max(0, Math.min(18, Number(decimals))) : 9;
+  const cacheKey = `${mint}:${normalizedDecimals}`;
+  const cached = quoteSnapshotCache.get(cacheKey);
+  if (cached && now() - cached.at < QUOTE_SNAPSHOT_MS) return cached.priceUsd;
+  if (quoteBackoffActive()) return null;
+  try {
+    const tokenUnits = 1000 * (10 ** normalizedDecimals);
     const [solUsd, quoteRes] = await Promise.all([
       fetchSolUsdPriceCached(),
-      axios.get(url.toString(), { timeout: 10_000, headers: JSON_HEADERS }),
+      jupiterQuote({ inputMint: mint, outputMint: WSOL_MINT, amount: Math.round(tokenUnits), slippageBps: 100 }, mint.slice(0, 8), 2),
     ]);
-    const outAmount = quoteRes.data?.outAmount;
+    const outAmount = quoteRes?.outAmount;
     if (!outAmount) return null;
     const outSol = Number(outAmount) / 1e9;
     if (!Number.isFinite(solUsd) || solUsd <= 0) return null;
-    return (outSol / 1000) * solUsd;
+    const priceUsd = (outSol / 1000) * solUsd;
+    quoteSnapshotCache.set(cacheKey, { at: now(), priceUsd });
+    return priceUsd;
   } catch (err) {
     setQuoteBackoff(err);
     if (err.response?.status !== 429) console.log(`[quote] ${mint.slice(0, 8)}... ${err.response?.status || ''} ${err.message}`);

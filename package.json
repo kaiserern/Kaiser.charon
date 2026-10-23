@@ -5,7 +5,8 @@
   "private": true,
   "scripts": {
     "start": "node index.js",
-    "check": "node --check index.js && node --check src/app.js && node --check src/config.js && node --check src/liveExecutor.js"
+    "check": "node --check index.js && node --check src/app.js && node --check src/config.js && node --check src/liveExecutor.js",
+    "test": "node --test --test-force-exit --test-timeout=20000 tests/*.test.js"
   },
   "dependencies": {
     "@solana/web3.js": "^1.98.4",

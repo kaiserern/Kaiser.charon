@@ -1,3 +1,5 @@
+import { updateCandidateSnapshot } from '../db/candidates.js';
+import { paperAudit } from '../db/paperAudit.js';
 import { now, pruneSeen } from '../utils.js';
 import { numSetting, boolSetting } from '../db/settings.js';
 import { db } from '../db/connection.js';
@@ -146,7 +148,9 @@ export async function processCandidateFromSignals(signals) {
   const momentumResult = await momentumFilter(candidate, momentumThreshold);
   if (!momentumResult.passed) {
     candidate.filters.passed = false;
-    candidate.filters.failures.push(`momentum score ${momentumResult.score} < ${momentumThreshold}`);
+    candidate.filters.failures.push(`momentum: ${momentumResult.reason || 'score_below_threshold'} (${momentumResult.score})`);
+    paperAudit(candidate.token.mint, 'momentum_rejected', { candidateId, reason: momentumResult.reason || 'score_below_threshold', score: momentumResult.score, threshold: momentumThreshold });
+    updateCandidateSnapshot(candidateId, candidate, 'filtered');
     candidate.filters.momentumScore = momentumResult.score;
     console.log(`[momentum] filtered ${candidate.token.mint.slice(0, 8)}... score ${momentumResult.score} < ${momentumThreshold}`);
     return;
@@ -258,13 +262,18 @@ export async function processCandidateFromSignals(signals) {
 
 export async function handleApprovedBuy(selectedRow, decision, batchId, rows = [], triggerCandidateId = null) {
   const mode = tradingMode();
-  // Fire-and-forget refresh — start now, await later. Wrapped so a refresh failure
-  // doesn't kill the trade — we just fall back to the unrefreshed row.
-  const refreshPromise = refreshCandidateForExecution(selectedRow).catch(err => {
-    console.error('[handleApprovedBuy] refresh failed, using stale row:', err.message);
-    return { ...selectedRow, refreshError: err.message, candidate: { ...selectedRow.candidate, filters: selectedRow.candidate.filters || {} } };
-  });
-  const freshSelectedRow = await refreshPromise;
+  const refreshStartedAt = now();
+  let freshSelectedRow;
+  try {
+    freshSelectedRow = await refreshCandidateForExecution(selectedRow);
+  } catch (err) {
+    console.error(`[execution-refresh] rejected ${selectedRow.mint || selectedRow.candidate?.token?.mint || 'unknown'}: ${err.message}`);
+    updateCandidateStatus(selectedRow.id, 'stale_rejected');
+    logDecisionEvent({ batchId, triggerCandidateId, selectedRow, rows, decision, mode,
+      action: 'entry_rejected_refresh', guardrails: { error: err.message, refreshLatencyMs: now() - refreshStartedAt } });
+    return;
+  }
+  console.log(`[execution-refresh] ${freshSelectedRow.candidate.token.mint.slice(0, 8)} ${now() - refreshStartedAt}ms passed=${Boolean(freshSelectedRow.candidate.filters?.passed)}`);
   const executionRows = rows.map(row => row.id === freshSelectedRow.id ? freshSelectedRow : row);
   if (!freshSelectedRow.candidate.filters?.passed) {
     updateCandidateStatus(freshSelectedRow.id, 'stale_rejected');

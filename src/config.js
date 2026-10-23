@@ -23,6 +23,16 @@ export const SOLANA_WS_URL = process.env.SOLANA_WS_URL || `wss://mainnet.helius-
 export const JUPITER_SWAP_BASE_URL = process.env.JUPITER_SWAP_BASE_URL || 'https://api.jup.ag/swap/v2';
 export const JUPITER_SLIPPAGE_BPS = Number(process.env.JUPITER_SLIPPAGE_BPS || 300);
 export const LIVE_MIN_SOL_RESERVE_LAMPORTS = Math.floor(Number(process.env.LIVE_MIN_SOL_RESERVE || 0.02) * 1_000_000_000);
+
+// Freshness gate live entry: batalkan BUY kalau harga fill (dari quote Jupiter) menyimpang
+// lebih dari N% di atas harga sinyal. 0 / negatif = gate nonaktif. Default 3%.
+export const ENTRY_FRESHNESS_GATE_PCT = Number(process.env.ENTRY_FRESHNESS_GATE_PCT ?? 3);
+// TTL cache fetchJupiterAsset untuk fast-path freshly graduated (pumpportal_graduated).
+// Dulu 20s -> harga sinyal basi sampai 20s. Default 2s.
+export const JUPITER_ASSET_FRESH_TTL_MS = Number(process.env.JUPITER_ASSET_FRESH_TTL_MS ?? 2000);
+// Shadow mode: kalau true, freshness gate hanya mencatat (console log) tanpa memblokir BUY.
+// Dipakai untuk validasi drift di live sebelum enforce. Default false.
+export const ENTRY_FRESHNESS_GATE_SHADOW = process.env.ENTRY_FRESHNESS_GATE_SHADOW === 'true';
 export const LLM_BASE_URL = process.env.LLM_BASE_URL || 'https://openrouter.ai/api/v1';
 export const LLM_API_KEY = process.env.LLM_API_KEY || '';
 export const LLM_MODEL = process.env.LLM_MODEL || 'MiniMax-M2.7';

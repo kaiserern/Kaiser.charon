@@ -30,3 +30,11 @@ dashboard/
 test_migration_with_key.js
 close_all.js
 backup_trenches_pause.js
+
+# Generated render/media outputs
+artifacts/
+output/
+
+# Ad-hoc manual scripts
+test_render.js
+test_simple_ws.js
