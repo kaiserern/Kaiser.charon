@@ -15,7 +15,7 @@ A working fork of [yunus-0x/charon](https://github.com/yunus-0x/charon). All cre
 
 ## At a glance
 
-| | |
+| Topic | Current state |
 |---|---|
 | **Pipeline** | signal → enrich → filter → score → decision → position |
 | **Active route** | `pumpfun_pregrad` only (allowlist, gated before enrichment) |
