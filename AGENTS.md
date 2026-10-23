@@ -54,7 +54,7 @@ npm start
 ## .env Minimal untuk Dry Run
 ```bash
 TELEGRAM_BOT_TOKEN=123456:ABC-DEF1234gh
-TELEGRAM_CHAT_ID=8089417722
+TELEGRAM_CHAT_ID=<your_chat_id>
 
 SIGNAL_SERVER_URL=https://api.thecharon.xyz/api
 SIGNAL_SERVER_KEY=your_signal_key_here
