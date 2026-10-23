@@ -5,6 +5,7 @@ import { PUMPPORTAL_API_KEY, PUMPPORTAL_ENABLED } from '../config.js';
 import { now, sleep } from '../utils.js';
 import { singleFlight } from '../utils/singleFlight.js';
 import { fetchGmgnTokenInfo } from '../enrichment/gmgn.js';
+import { marketCapFromGmgn } from '../utils.js';
 import { storeSignalEvent } from './trending.js';
 import { sendTelegram } from '../telegram/send.js';
 
@@ -183,7 +184,7 @@ async function handleNewToken(data) {
 }
 
 function buildGraduatedCoin(mint, symbol, gmgnInfo, originalData, patternFlags = []) {
-  const marketCap = Number(gmgnInfo?.market_cap ?? gmgnInfo?.mcap ?? 0) || null;
+  const marketCap = marketCapFromGmgn(gmgnInfo) || null;
   const holderCount = Number(gmgnInfo?.holder_count ?? 0) || null;
   const liquidity = Number(gmgnInfo?.liquidity ?? 0) || null;
   return {
@@ -254,7 +255,7 @@ async function checkBondingCurve() {
       entry.gmgnInfo = info;
       entry.consecutiveErrors = 0;
 
-      const mcap = Number(info?.market_cap ?? info?.mcap ?? 0) || 0;
+      const mcap = marketCapFromGmgn(info) || 0;
       if (mcap > closestMcap) {
         closestMcap = mcap;
         closestSymbol = entry.symbol;

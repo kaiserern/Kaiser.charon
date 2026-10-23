@@ -155,17 +155,26 @@ function gmgnStatusText(kind) {
   return `blocked ${seconds}s`;
 }
 
+function gmgnPriceValue(info) {
+  // GMGN nests price under an object: price = { price: "0.0093", price_1m: ..., buys_1m: ... }
+  const raw = info?.price;
+  const candidate = raw && typeof raw === 'object' ? raw.price ?? raw.price_usd : raw;
+  const value = Number(candidate);
+  return Number.isFinite(value) && value > 0 ? value : null;
+}
+
 function marketCapFromGmgn(info) {
   const direct = Number(info?.market_cap ?? info?.mcap);
   if (Number.isFinite(direct) && direct > 0) return direct;
-  const price = Number(info?.price);
+  const price = gmgnPriceValue(info);
   const supply = Number(info?.circulating_supply ?? info?.total_supply);
-  return Number.isFinite(price) && Number.isFinite(supply) ? price * supply : null;
+  if (price && Number.isFinite(supply) && supply > 0) return price * supply;
+  const migrated = Number(info?.migration_market_cap);
+  return Number.isFinite(migrated) && migrated > 0 ? migrated : null;
 }
 
 function tokenPriceFromGmgn(info) {
-  const price = Number(info?.price);
-  return Number.isFinite(price) ? price : null;
+  return gmgnPriceValue(info);
 }
 
 async function fetchGmgnTokenInfo(mint, useCache = true) {
