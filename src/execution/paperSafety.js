@@ -31,7 +31,15 @@ export async function delayedQuote(request, fetchQuote, { reference, wait = ms =
   await wait(2000);
   const fill = await fetchQuote(request);
   if (!validQuote(fill, request, clock())) throw new Error('fill_quote_missing_or_stale');
-  if (integer(fill.outAmount) * 10000n < integer(first.outAmount) * 9700n) throw new Error('slippage_exceeds_3_percent');
+  if (integer(fill.outAmount) * 10000n < integer(first.outAmount) * 9700n) {
+    // Keep the measured drift on the error: "slippage_exceeds_3_percent" alone reads
+    // like a plumbing failure in alerts, while it is the gate working (rejected mints
+    // ran to a median -19% within 5 minutes; see charon-improvement-project).
+    const driftPct = (Number(integer(fill.outAmount) * 10000n / integer(first.outAmount)) - 10000) / 100;
+    const error = new Error('slippage_exceeds_3_percent');
+    error.detail = { driftPct: Number(driftPct.toFixed(2)), referenceOut: String(first.outAmount), fillOut: String(fill.outAmount) };
+    throw error;
+  }
   return { reference: first, fill };
 }
 export function paperPnl(entryLamports, proceedsLamports, entryFee = '15000', exitFee = '15000') {

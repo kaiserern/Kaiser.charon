@@ -24,6 +24,17 @@ import { escapeHtml } from '../format.js';
 
 export const seenSignalCandidates = new Map();
 
+// Expected, self-healing entry rejections raised by the paper/logic gates. These are
+// logged and reported quietly; anything else is a genuine fault and keeps the alarm.
+const EXPECTED_ENTRY_REJECTIONS = new Set([
+  'reference_quote_missing_or_stale',
+  'fill_quote_missing_or_stale',
+  'slippage_exceeds_3_percent',
+  'missing_token_decimals',
+  'missing_sol_usd_price',
+  'paper_mode_or_position_limit_changed',
+]);
+
 setDegenHandler(maybeProcessDegenCandidate);
 setCandidateHandler(processCandidateFromSignals);
 
@@ -310,7 +321,10 @@ export async function handleApprovedBuy(selectedRow, decision, batchId, rows = [
       pastWinPnlSol = result.pastWinPnlSol;
       pastWinClosedAtMs = result.pastWinClosedAtMs;
     } catch (err) {
-      console.error(`[orchestrator] createDryRunPosition failed for ${freshSelectedRow.candidate.token.mint}: ${err.message}`);
+      const detail = err.detail || {};
+      const gateRejection = EXPECTED_ENTRY_REJECTIONS.has(err.message);
+      if (gateRejection) console.log(`[orchestrator] entry skipped for ${freshSelectedRow.candidate.token.mint}: ${err.message}${detail.driftPct != null ? ` (drift ${detail.driftPct}%)` : ''}`);
+      else console.error(`[orchestrator] createDryRunPosition failed for ${freshSelectedRow.candidate.token.mint}: ${err.message}`);
       logDecisionEvent({
         batchId,
         triggerCandidateId,
@@ -325,15 +339,19 @@ export async function handleApprovedBuy(selectedRow, decision, batchId, rows = [
         },
         execution: { 
           error: err.message,
-          stack: err.stack?.slice(0, 500),
+          ...detail,
+          stack: gateRejection ? undefined : err.stack?.slice(0, 500),
         },
       });
+      // A safety gate doing its job is not an incident: paging with a red siren for
+      // every quote-gated entry buried the real failures (that alert class fired
+      // 185x/day). Gates get one quiet line, real faults keep the alarm.
       await sendTelegram([
-        '🛑 <b>Position creation failed</b>',
+        gateRejection ? '⊘ <b>Entry skipped</b> — safety gate' : '🛑 <b>Position creation failed</b>',
         '',
         candidateSummary(freshSelectedRow.candidate, decision),
         '',
-        `Error: ${escapeHtml(err.message)}`,
+        `${gateRejection ? 'Gate' : 'Error'}: ${escapeHtml(err.message)}${detail.driftPct != null ? ` (ref→fill ${detail.driftPct}%)` : ''}`,
       ].join('\n'));
       return;
     }

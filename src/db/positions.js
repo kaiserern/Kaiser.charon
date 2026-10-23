@@ -3,7 +3,7 @@ import { paperAudit } from './paperAudit.js';
 import { db } from './connection.js';
 import { now, json } from '../utils.js';
 import { numSetting, boolSetting, setting, activeStrategy, slippageAdjustedMcap } from './settings.js';
-import { fetchJupiterExecutionQuote, fetchSolUsdPrice } from '../enrichment/jupiter.js';
+import { fetchJupiterExecutionQuote, fetchSolUsdPriceCached } from '../enrichment/jupiter.js';
 import { WSOL_MINT } from '../config.js';
 
 export function openPositions() {
@@ -55,19 +55,25 @@ export async function createDryRunPosition(candidateId, candidate, decision, rea
   
   const amountLamports = Math.floor(sizeSol * 1_000_000_000);
   let entryQuote, referenceQuote;
+  const entryQuoteRequest = { inputMint: WSOL_MINT, outputMint: candidate.token.mint, amount: amountLamports };
+  const entryFetcher = (request) => fetchJupiterExecutionQuote(request, { waitOutBackoff: true });
   try {
-    const result = await delayedQuote({ inputMint: WSOL_MINT, outputMint: candidate.token.mint, amount: amountLamports }, fetchJupiterExecutionQuote, { attempts: 3 });
+    const result = await delayedQuote(entryQuoteRequest, entryFetcher, { attempts: 3 });
     entryQuote = result.fill; referenceQuote = result.reference;
   } catch (error) {
-    paperAudit(candidate.token.mint, 'entry_rejected', { reason: error.message, candidateId });
+    paperAudit(candidate.token.mint, 'entry_rejected', { reason: error.message, candidateId, ...(error.detail || {}) });
     throw error;
   }
   const tokenAmountRaw = String(entryQuote.outAmount);
-  const solUsd = await fetchSolUsdPrice();
+  const solUsd = await fetchSolUsdPriceCached();
   const tokenDecimals = Number(candidate.jupiterAsset?.decimals ?? candidate.metrics.decimals);
-  if (!Number.isInteger(tokenDecimals) || tokenDecimals < 0 || tokenDecimals > 18 || !Number.isFinite(Number(solUsd)) || Number(solUsd) <= 0) {
-    paperAudit(candidate.token.mint, 'entry_rejected', { reason: 'missing_decimals_or_sol_price', candidateId });
-    throw new Error('missing_decimals_or_sol_price');
+  if (!Number.isInteger(tokenDecimals) || tokenDecimals < 0 || tokenDecimals > 18) {
+    paperAudit(candidate.token.mint, 'entry_rejected', { reason: 'missing_token_decimals', candidateId });
+    throw new Error('missing_token_decimals');
+  }
+  if (!Number.isFinite(Number(solUsd)) || Number(solUsd) <= 0) {
+    paperAudit(candidate.token.mint, 'entry_rejected', { reason: 'missing_sol_usd_price', candidateId });
+    throw new Error('missing_sol_usd_price');
   }
   const tokenAmount = tokenAmountRaw ? Number(tokenAmountRaw) / (10 ** Math.max(0, Math.min(18, tokenDecimals))) : 0;
   const entryPrice = tokenAmount > 0 && Number(solUsd) > 0

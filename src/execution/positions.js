@@ -5,7 +5,7 @@ import { numSetting, boolSetting, strategyById, slippageAdjustedMcap } from '../
 import { db } from '../db/connection.js';
 import { firstPositiveNumber, marketCapFromGmgn, tokenPriceFromGmgn, computeAtrPercent, dynamicStopLossPercent } from '../utils.js';
 import { fetchGmgnTokenInfo } from '../enrichment/gmgn.js';
-import { fetchJupiterAsset, fetchJupiterHolders, fetchJupiterChartContext, fetchJupiterWalletPnl, fetchTokenSpotViaQuote, fetchJupiterExecutionQuote, fetchSolUsdPrice } from '../enrichment/jupiter.js';
+import { fetchJupiterAsset, fetchJupiterHolders, fetchJupiterChartContext, fetchJupiterWalletPnl, fetchTokenSpotViaQuote, fetchJupiterExecutionQuote, fetchSolUsdPriceCached } from '../enrichment/jupiter.js';
 import { liveWalletPubkey } from '../liveExecutor.js';
 import { fetchSavedWalletExposure } from '../enrichment/wallets.js';
 import { filterCandidate } from '../pipeline/candidateBuilder.js';
@@ -154,7 +154,7 @@ export async function refreshPosition(position, { autoExit = true, jupiterPnl = 
   // mark and flag the tick instead of skipping it.
   const valuationStatus = quoteValid ? 'quote' : 'mark_fallback';
   if (isPaper && !quoteValid && position.pnl_sol !== null) paperAudit(position.mint, 'valuation_mark_fallback', { positionId: position.id, reason: 'quote_missing_or_stale' });
-  const solUsd = useQuote && sellQuote?.outAmount ? await fetchSolUsdPrice() : null;
+  const solUsd = useQuote && sellQuote?.outAmount ? await fetchSolUsdPriceCached() : null;
   const quoteProceedsSol = sellQuote?.outAmount ? Number(sellQuote.outAmount) / 1e9 : null;
   const quotePrice = quoteProceedsSol && solUsd && Number(tokenAmountRaw) > 0
     ? (quoteProceedsSol * Number(solUsd)) / (Number(tokenAmountRaw) / (10 ** Number(asset?.decimals ?? 9)))

@@ -26,6 +26,20 @@ const QUOTE_SNAPSHOT_MS = 10_000;
 const QUOTE_MIN_GAP_MS = 130;
 let quoteNextSlot = 0;
 
+// Measured 2026-10-23 with the live key: the bucket is 10 requests per SECOND
+// (x-ratelimit-reset ticks every second, x-ratelimit-current saturates at 10).
+// Blind 130ms pacing still burst past it whenever candidates, entries and 5
+// monitored positions collided, so the budget is now read from the headers:
+// when the current window is nearly spent, the next slot is pushed to the reset
+// boundary instead of guessing.
+function noteQuoteBudget(headers) {
+  const remaining = Number(headers?.['x-ratelimit-remaining']);
+  const reset = Number(headers?.['x-ratelimit-reset']);
+  if (!Number.isFinite(remaining) || !Number.isFinite(reset) || reset <= 0) return;
+  const resetMs = reset > 1_000_000_000_000 ? reset : reset * 1000;
+  if (remaining <= 1) quoteNextSlot = Math.max(quoteNextSlot, resetMs + 25);
+}
+
 async function quoteSlot() {
   const at = Date.now();
   const slot = Math.max(at, quoteNextSlot);
@@ -244,11 +258,23 @@ const IGNORED_PNL_MINTS = new Set([
   'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
 ]);
 
+// SOL/USD moves a few tenths of a percent per minute, so re-fetching it for every
+// entry and every monitored position only burned rate-limit budget — and when the
+// fetch failed the entry died as `missing_decimals_or_sol_price` even though the
+// quote was already paid for. Cache for 60s and serve the last good price for up
+// to 10 minutes if the upstream is unavailable.
+const SOL_USD_STALE_MS = 10 * 60_000;
+
 async function fetchSolUsdPriceCached() {
   if (solUsdCache.price != null && now() - solUsdCache.at < 60_000) return solUsdCache.price;
   const price = await fetchSolUsdPrice();
-  solUsdCache = { price, at: now() };
-  return price;
+  if (Number.isFinite(Number(price)) && Number(price) > 0) {
+    solUsdCache = { price, at: now() };
+    return price;
+  }
+  if (solUsdCache.price != null && now() - solUsdCache.at < SOL_USD_STALE_MS) return solUsdCache.price;
+  solUsdCache = { price: null, at: now() };
+  return null;
 }
 
 async function jupiterQuoteOnce(params, label) {
@@ -261,8 +287,10 @@ async function jupiterQuoteOnce(params, label) {
     // unauthenticated and sat at ~1 req/s, so monitoring was permanently 429'd.
     const headers = JUPITER_API_KEY ? { ...JSON_HEADERS, 'x-api-key': JUPITER_API_KEY } : JSON_HEADERS;
     const res = await axios.get(url.toString(), { timeout: 10_000, headers });
+    noteQuoteBudget(res.headers);
     return res.data?.outAmount ? { ...res.data, observedAtMs: now() } : null;
   } catch (err) {
+    noteQuoteBudget(err.response?.headers);
     setQuoteBackoff(err);
     if (err.response?.status !== 429) console.log(`[quote] ${label} ${err.response?.status || ''} ${err.message}`);
     return null;
@@ -271,11 +299,19 @@ async function jupiterQuoteOnce(params, label) {
 
 // A freshly migrated mint often has no route for a few hundred ms — retry instead of
 // dropping the entry (retries skip 429s, which are handled by the backoff).
-async function jupiterQuote(params, label, attempts = 3) {
+// `waitOutBackoff` is for entries only: dropping a signal because the previous 429
+// still has 4s left on its timer was rejecting 140 candidates a day for a wait that
+// costs nothing (positions are monitored on a 10s tick and never wait).
+async function jupiterQuote(params, label, attempts = 3, { waitOutBackoff = false } = {}) {
   for (let i = 0; i < attempts; i++) {
     const quote = await jupiterQuoteOnce(params, label);
     if (quote) return quote;
-    if (quoteBackoffActive()) return null;
+    if (quoteBackoffActive()) {
+      if (!waitOutBackoff) return null;
+      const waitMs = Math.min(quoteBackoffUntil - now() + 50, 10_000);
+      if (waitMs > 0) await sleep(waitMs);
+      continue;
+    }
     await sleep(350);
   }
   return null;
@@ -283,8 +319,8 @@ async function jupiterQuote(params, label, attempts = 3) {
 
 // Fixed 1000-token reference amount ignores price impact for large sizes —
 // upgrade to position-sized quotes when size_sol > 1.
-export async function fetchJupiterExecutionQuote({ inputMint, outputMint, amount }) {
-  return jupiterQuote({ inputMint, outputMint, amount, slippageBps: 100 }, 'execution');
+export async function fetchJupiterExecutionQuote({ inputMint, outputMint, amount }, opts = undefined) {
+  return jupiterQuote({ inputMint, outputMint, amount, slippageBps: 100 }, 'execution', 3, opts);
 }
 
 async function fetchTokenSpotViaQuote(mint, decimals = 9) {
@@ -333,6 +369,7 @@ export {
   normalizeJupiterTrendingRow,
   fetchJupiterAsset,
   fetchSolUsdPrice,
+  fetchSolUsdPriceCached,
   estimateTokenAmountFromSol,
   fetchJupiterHolders,
   summarizeCandles,
