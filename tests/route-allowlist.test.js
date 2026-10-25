@@ -22,6 +22,7 @@ test('route allowlist admits only listed routes', () => {
   assert.equal(routeAllowed('pumpfun_pregrad'), true);
   assert.equal(routeAllowed('single_source'), false);
   assert.equal(routeAllowed('graduated_trending'), false);
+  assert.equal(routeAllowed('pumpportal_graduated'), false); // also gates the pumpportal feed + its alert
   assert.equal(routeAllowed(''), false);
 });
 

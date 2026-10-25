@@ -31,8 +31,11 @@ function enqueueGmgn(work, deadlineMs) {
     if (now() >= expiresAt) throw new Error('gmgn queue deadline exceeded');
     return work(expiresAt);
   });
-  gmgnQueue = run.catch(() => {});
-  return Promise.race([run, expired]).finally(() => clearTimeout(timer));
+  const settled = Promise.race([run, expired]);
+  // Bound the chain by the deadline, not by the work: one request that overruns its own
+  // abort used to hold gmgnQueue forever and starve every later caller (100% gmgn=null).
+  gmgnQueue = settled.catch(() => {});
+  return settled.finally(() => clearTimeout(timer));
 }
 
 function gmgnErrorText(status, payload, fallback) {

@@ -131,6 +131,18 @@ Position monitoring is quote-first: exits price on an executable sell quote. If 
 | Config drift | `max_open_positions` was 3 / 5 / 15 across `.env`, strategy and settings — the bot used 15, multiplying quote pressure | 5 everywhere; `TRENDING_ENABLED` aligned |
 | Disk | `charon.log` unrotated at 351 MB on a 92%-full disk | `/etc/logrotate.d/charon` (daily, 7 rotations, 200 MB cap, `copytruncate`) |
 
+### 2026-10-25 — GMGN queue starvation
+
+The bot went ~38 hours without opening a position while `pumpfun_pregrad` candidates kept arriving. Cause was upstream of the filter: every candidate had `gmgn = null`, so `metrics.liquidityUsd` fell back to Jupiter's DEX liquidity (~$10.7k) instead of GMGN's pool liquidity (~$22.7k) — and the $15k floor rejected 169 of 176 candidates in 24 hours.
+
+| Area | Symptom | Fix |
+|---|---|---|
+| GMGN queue | single serial queue with 2.5s pacing; one overrunning request held the chain forever, so every later caller died at the 15s deadline (`gmgn queue deadline exceeded`) and `fetchGmgnTokenInfo` returned `null` silently | the chain is now bounded by the deadline, not by the work item |
+| Feed hygiene | the pumpportal bonding-curve monitor polled GMGN for up to 50 tracked mints every 25s even though its only route (`pumpportal_graduated`) was allowlisted out — 2 req/s of demand against 0.4 req/s of capacity | token tracking stops when the route is not in `allowed_routes`; the DOWN alert now says "no trading impact" instead of paging "bot blind to new tokens" |
+| Recovery | restarting cleared the wedge and the next pregrad candidate enriched correctly (liq $22,758, filter passed, position opened) | — |
+
+pumpportal.fun itself was serving `502 Bad Gateway` from nginx on `/api/data` (both HTTP and WebSocket upgrade) for the entire window — an upstream outage, not a client fault, and unrelated to the zero-entry problem.
+
 ### Optional: pump.fun Cloudflare sidecar
 
 If your host gets `403` from `frontend-api-v3.pump.fun`, the pregrad scanner and graduation detection cannot reach the REST API directly. They fall back to a local daemon that fetches through headless Chromium.

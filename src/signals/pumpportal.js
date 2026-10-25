@@ -8,6 +8,7 @@ import { fetchGmgnTokenInfo } from '../enrichment/gmgn.js';
 import { marketCapFromGmgn } from '../utils.js';
 import { storeSignalEvent } from './trending.js';
 import { sendTelegram } from '../telegram/send.js';
+import { routeAllowed } from '../pipeline/orchestrator.js';
 
 const WS_URL = `wss://pumpportal.fun/api/data?api-key=${PUMPPORTAL_API_KEY}`;
 const RECONNECT_DELAY_MS = 5_000;
@@ -96,9 +97,14 @@ function checkHealth() {
     const downMs = t - lastDisconnectAt;
     if (downMs > DISCONNECT_ALERT_THRESHOLD_MS && !disconnectAlertSent) {
       const code = lastDisconnectCode ?? '?';
-      sendTelegram(
-        `🚨 [pumpportal] DOWN >5min — disconnected at ${fmtHuman(lastDisconnectAt)}, code=${code}. Reconnects failing. Bot blind to new tokens.`
-      ).catch(err => console.log(`[pumpportal] alert telegram failed: ${err.message}`));
+      const msg = `[pumpportal] DOWN >5min — disconnected at ${fmtHuman(lastDisconnectAt)}, code=${code}. Reconnects failing.`;
+      // Only worth a phone alarm when this feed can still produce a trade.
+      if (routeAllowed('pumpportal_graduated')) {
+        sendTelegram(`🚨 ${msg} Bot blind to new tokens.`)
+          .catch(err => console.log(`[pumpportal] alert telegram failed: ${err.message}`));
+      } else {
+        console.log(`${msg} pumpportal_graduated is not in allowed_routes — no trading impact.`);
+      }
       disconnectAlertSent = true;
     }
   }
@@ -133,6 +139,12 @@ function stopHealthMonitor() {
 async function handleNewToken(data) {
   const mint = data?.mint;
   if (!mint) return;
+
+  // This feed only produces pumpportal_graduated candidates. When the allowlist excludes
+  // that route, tracking here is dead weight: the bonding-curve monitor polls GMGN for up
+  // to 50 mints every 25s, which starved the shared GMGN queue and nulled enrichment for
+  // the route that was actually trading (25 Oct: 100% gmgn=null, zero entries for ~38h).
+  if (!routeAllowed('pumpportal_graduated')) return;
 
   // Dedup: skip if seen within 1 hour
   if (seenTokens.has(mint)) return;
